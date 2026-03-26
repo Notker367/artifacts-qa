@@ -43,7 +43,7 @@ def remaining_seconds(response) -> float | None:
     return cooldown.get("remaining_seconds")
 
 
-def wait_for_cooldown(client, character_name: str, max_wait: float = 60.0) -> None:
+def wait_for_cooldown(client, character_name: str, max_wait: float = 120.0) -> None:
     """
     Block until the character's cooldown expires, then return.
     Reads cooldown_expiration from GET /characters/{name} — works at any point,
