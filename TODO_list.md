@@ -108,20 +108,20 @@
 
 Цель: многошаговые значимые сценарии, персонаж как полноценный агент.
 
-- [ ] **13. Профиль персонажа** (`feat(character): add skills, stats, and equipment inspection`)
+- [x] **13. Профиль персонажа** (`feat(character): add skills, stats, and equipment inspection`)
   - уровни навыков: mining, woodcutting, fishing, cooking, weaponcrafting, gearcrafting, jewelrycrafting, alchemy
   - базовые статы: attack, defense, speed, hp_max
   - слоты экипировки и надетые предметы
   - хелпер `get_character_profile` — единая точка для решений по персонажу
   - основа для skill-aware крафта, подбора ресурсов, мульти-перса
 
-- [ ] **14. Крафт** (`feat(crafting): add crafting flow with material delta check`)
+- [x] **14. Крафт** (`feat(crafting): add crafting flow with material delta check`)
   - проверка нужных материалов и уровня навыка
   - выполнение крафта (нужен тайл мастерской)
   - delta материалов видима
   - результат крафта проверяем
 
-- [ ] **15. Задания (Tasks)** (`feat(tasks): add task accept and complete flow`)
+- [x] **15. Задания (Tasks)** (`feat(tasks): add task accept and complete flow`)
   - просмотр текущего задания
   - принять / отслеживать / завершить задание
   - один поток задания проверен end-to-end

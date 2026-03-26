@@ -12,8 +12,12 @@ ALREADY_AT_DESTINATION = 490
 INVENTORY_FULL = 497
 CHARACTER_NOT_FOUND = 498
 ON_COOLDOWN = 499
+MISSING_ITEM = 478     # action requires items the character does not have (e.g. task cancel costs task coin)
 CHARACTER_LOCKED = 486
+NO_TASK = 487          # character has no task assigned
+TASK_NOT_COMPLETE = 488  # task is active but objective not yet met
 INSUFFICIENT_GOLD = 492
+SKILL_LEVEL_TOO_LOW = 493
 
 # Human-readable labels for known error codes
 _ERROR_LABELS = {
@@ -27,7 +31,11 @@ _ERROR_LABELS = {
     CHARACTER_NOT_FOUND: "character not found",
     ON_COOLDOWN: "character is on cooldown",
     CHARACTER_LOCKED: "character is locked",
+    MISSING_ITEM: "missing required item(s) for this action",
+    NO_TASK: "no task assigned",
+    TASK_NOT_COMPLETE: "task objective not yet met",
     INSUFFICIENT_GOLD: "not enough gold",
+    SKILL_LEVEL_TOO_LOW: "skill level too low for this craft",
 }
 
 
