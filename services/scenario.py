@@ -50,10 +50,9 @@ BANK_TILE = (4, 1)             # nearest bank
 MONSTERS_TASKMASTER_TILE = (1, 2)  # accept/complete monster tasks
 MINING_TILE = (2, 0)           # Copper Rocks, mining level 1
 
-# TODO (task 18.1): discover and fill in these tiles via GET /maps?content_type=resource
-WOODCUTTING_TILE = None        # axe required — coordinates unknown
-FISHING_TILE = None            # net required — coordinates unknown
-ALCHEMY_TILE = None            # gloves required — coordinates unknown
+WOODCUTTING_TILE = (-1, 0)     # ash_tree, woodcutting level 1 — closest to start
+FISHING_TILE = (4, 2)          # gudgeon_spot, fishing level 1 — closest lake
+ALCHEMY_TILE = (2, 2)          # sunflower_field, alchemy level 1 — closest plant tile
 
 # --- Thresholds ---
 HP_THRESHOLD = 0.3     # rest when HP drops below 30% to avoid death penalty cooldown
@@ -182,13 +181,11 @@ def run_mining_cycle(client, character_name: str) -> None:
 
 def run_woodcutting_cycle(client, character_name: str) -> None:
     """
-    One woodcutting action cycle.
-    Tile coordinates not yet known — see task 18.1 (map discovery).
+    One woodcutting action cycle:
+      1. deposit if inventory is nearly full
+      2. move to ash_tree tile (-1, 0)
+      3. gather
     """
-    if WOODCUTTING_TILE is None:
-        logger.error("%s: woodcutting tile not configured — skipping (see TODO 18.1)", character_name)
-        return
-
     _maybe_deposit_all(client, character_name)
 
     wait_for_cooldown(client, character_name)
@@ -206,13 +203,11 @@ def run_woodcutting_cycle(client, character_name: str) -> None:
 
 def run_alchemy_cycle(client, character_name: str) -> None:
     """
-    One alchemy/plant gathering action cycle.
-    Tile coordinates not yet known — see task 18.1 (map discovery).
+    One alchemy/plant gathering action cycle:
+      1. deposit if inventory is nearly full
+      2. move to sunflower_field tile (2, 2)
+      3. gather
     """
-    if ALCHEMY_TILE is None:
-        logger.error("%s: alchemy tile not configured — skipping (see TODO 18.1)", character_name)
-        return
-
     _maybe_deposit_all(client, character_name)
 
     wait_for_cooldown(client, character_name)
