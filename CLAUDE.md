@@ -79,3 +79,27 @@ Always check:
 
 ## Reference
 Read `docs/artifacts_context.md` before expanding coverage.
+Read `docs/implementation_backlog.md` before proposing architecture or implementation steps.
+
+## Comments and naming
+- Code comments are mandatory for helpers, fixtures, and any non-obvious logic.
+- Use game-context terminology from `docs/artifacts_context.md` — not generic names.
+- Good examples: `wait_for_cooldown`, `assert_fight_result`, `deposit_gold_to_bank`, `is_inventory_full`.
+- Avoid: `handle_action`, `do_request`, `check_response`, `process_data`.
+- Comment on *why* something works the way it does, not just *what* it does.
+
+## Change approval workflow
+- Before adding new code blocks or making mass edits — present the plan, explain the intent, wait for confirmation.
+- Exception: small single-line fixes requested directly by the user.
+
+## Commit structure
+Format: `<type>(<scope>): <description>`
+
+Types: `feat`, `test`, `fix`, `chore`, `docs`
+Scopes: `infra`, `character`, `movement`, `gathering`, `inventory`, `bank`, `combat`, `rest`, `crafting`, `tasks`, `exchange`, `events`, `multi-char`
+
+Version is tied to backlog phase:
+- `v0.1.x` — Phase 1: Foundation (auth, logging, structure, error handling, cooldown, rate-limit)
+- `v0.2.x` — Phase 2: Basic gameplay (movement, gathering, inventory, bank, rest, combat)
+- `v0.3.x` — Phase 3: Production chains (crafting, tasks, scenario manager)
+- `v0.4.x` — Phase 4: Multi-character and expansion (grand exchange, events, achievements)
