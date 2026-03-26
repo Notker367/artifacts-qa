@@ -162,14 +162,38 @@ def _maybe_complete_task(client, character_name: str) -> None:
 # Cycle functions
 # ---------------------------------------------------------------------------
 
+def _hp_from_fight_response(response, character_name: str) -> tuple:
+    """
+    Extract (hp, max_hp) for this character from the fight response.
+    The fight response includes data.characters[] with the full post-fight state.
+    Avoids a separate GET /characters call just to read HP after combat.
+    Returns (None, None) if not parseable.
+    """
+    try:
+        for char in response.json()["data"]["characters"]:
+            if char.get("name") == character_name:
+                return char.get("hp"), char.get("max_hp")
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None, None
+
+
 def run_combat_cycle(client, character_name: str, cache: dict) -> None:
     """
     One combat action cycle:
-      1. resolve monster tile from cache
-      2. move and fight
-      3. rest if HP below threshold
-      4. complete + re-accept task if objective met
+      1. rest if HP is low — BEFORE moving to monster tile
+         (after a death, character respawns at spawn point with 1 HP;
+          without this check the next cycle walks them into combat at 1 HP)
+      2. move to monster tile
+      3. fight
+      4. rest again if HP dropped below threshold during the fight
+      5. complete + re-accept task if objective met
     """
+    # Pre-fight HP check: must happen before movement so a dead/damaged
+    # character doesn't walk into the next fight before recovering.
+    wait_for_cooldown(client, character_name)
+    _maybe_rest(client, character_name)
+
     tile = _resolve_tile(cache, ROLE_RESOURCE["combat"])
     if tile is None:
         return
@@ -186,11 +210,17 @@ def run_combat_cycle(client, character_name: str, cache: dict) -> None:
 
     result = parse_fight_result(response)
     outcome = "win" if result and is_win(result) else "loss"
+
+    # Read post-fight HP from the response — no extra API call needed.
+    hp, max_hp = _hp_from_fight_response(response, character_name)
+    hp_str = f"{hp}/{max_hp}" if hp is not None else "?"
+
     state = get_task_state(client, character_name)
-    logger.info("%s: fight %s | task %s %d/%d",
-                character_name, outcome,
+    logger.info("%s: fight %s | HP %s | task %s %d/%d",
+                character_name, outcome, hp_str,
                 state["task"], state["task_progress"], state["task_total"])
 
+    # Post-fight HP check: handles surviving fights with heavy damage taken.
     _maybe_rest(client, character_name)
     _maybe_complete_task(client, character_name)
 
