@@ -75,3 +75,61 @@ def test_gather_endpoint_reachable(client, character_name):
     assert response.status_code in (200, 497, 499, 598), (
         f"unexpected status from gather endpoint: {response.status_code}"
     )
+
+
+# --- Crafting ---
+
+def test_craft_endpoint_reachable(client, character_name):
+    """
+    POST /my/{name}/action/crafting must respond with a known game code.
+    Does not assert on 200 — requires correct workshop tile, materials, and skill level.
+    493 = skill too low, 478 = missing items, 598 = not on a workshop tile.
+    """
+    response = client.post(
+        f"/my/{character_name}/action/crafting",
+        json={"code": "copper_bar", "quantity": 1},
+    )
+    assert response.status_code in (200, 478, 493, 499, 598), (
+        f"unexpected status from crafting endpoint: {response.status_code}"
+    )
+
+
+# --- Tasks ---
+
+def test_task_state_readable_from_character(client, character_name):
+    """
+    Task state lives on the character object, not on a separate endpoint.
+    GET /characters/{name} must include all task fields needed by get_task_state.
+    """
+    data = client.get(f"/characters/{character_name}").json()["data"]
+    for field in ("task", "task_type", "task_progress", "task_total"):
+        assert field in data, f"character response missing task field: {field!r}"
+
+
+def test_task_accept_endpoint_reachable(client, character_name):
+    """
+    POST /my/{name}/action/task/new must respond with a known game code.
+    489 = character already has a task, 499 = on cooldown, 598 = not on taskmaster tile.
+    """
+    response = client.post(f"/my/{character_name}/action/task/new")
+    assert response.status_code in (200, 489, 499, 598), (
+        f"unexpected status from task/new endpoint: {response.status_code}"
+    )
+
+
+# --- Maps ---
+
+def test_maps_endpoint_reachable(client):
+    """
+    GET /maps must return 200 with a paginated data envelope.
+    This is a public endpoint — no auth needed, but client is authenticated anyway.
+    Verifies the map data source used by the map cache is reachable.
+    """
+    response = client.get("/maps", params={"page": 1, "size": 1})
+    assert response.status_code == 200, (
+        f"unexpected status from /maps endpoint: {response.status_code}"
+    )
+    body = response.json()
+    assert "data" in body
+    assert "total" in body
+    assert body["total"] > 0, "maps endpoint returned 0 tiles"

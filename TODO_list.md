@@ -143,15 +143,17 @@
   - `scripts/dispatch.py` — запускаемый вручную скрипт для проверки loop
   - тайлы ресурсов для woodcutting/alchemy — заглушки до пункта 18.1
 
-- [ ] **18.1. Карта ресурсов** (`feat(infra): discover and document resource tile coordinates`)
-  - найти тайлы через `GET /maps?content_type=resource` и `GET /resources`
-  - задокументировать координаты для всех ролей:
-    - mining: Copper Rocks `(2, 0)` ✅ — найти Iron/Coal для роста
-    - woodcutting: тайл с деревьями (axe) — `(?, ?)` ❓
-    - fishing: тайл с рыбой (net) — `(?, ?)` ❓
-    - alchemy: тайл с растениями (gloves) — `(?, ?)` ❓
-  - добавить константы в `services/scenario.py` или отдельный `services/map_data.py`
-  - обновить CLAUDE.md раздел Known map tiles
+- [x] **18.1. Карта ресурсов** (`feat(infra): add map tile cache with JSON storage`)
+  - `services/map_cache.py`: кэш 1428 тайлов, TTL 24ч, `find_content(cache, code)` поиск по коду
+  - `scripts/discover_map.py`: поиск тайлов по коду (`ash_tree chicken bank`), `--refresh`, `--all`
+  - `data/maps.json`: gitignored, генерируется скриптом
+  - координаты заполнены через `ROLE_RESOURCE` в `scenario.py` — нет хардкода:
+    - mining: `copper_rocks` → (2, 0)
+    - woodcutting: `ash_tree` → (-1, 0)
+    - fishing: `gudgeon_spot` → (4, 2)
+    - alchemy: `sunflower_field` → (2, 2)
+  - CLAUDE.md обновлён: полная карта ресурсов по ролям
+  - `gathering.py`: 598 → `invalidate_cache()` — кэш сбрасывается при несоответствии тайла
 
 ---
 
@@ -177,37 +179,44 @@
 
 ## MVP ✅
 
-Пункты 1–12 (Фазы 1 и 2) стабильны — **34 теста, 1 long**.
+Пункты 1–12 (Фазы 1 и 2) стабильны.
 Проект уже полезен для автоматизации реального геймплея одного персонажа.
 
 ## Текущее состояние
 
-Фазы 1 и 2 завершены (коммит `9ec2092`):
+**Фазы 1, 2 и 3 завершены.**
 
 **Сервисы:**
 - `clients/artifacts_client.py` — HTTP-клиент с logging и rate-limit комментарием
-- `services/errors.py` — коды ошибок + `INSUFFICIENT_GOLD = 492`
+- `services/errors.py` — все коды ошибок включая `NO_RESOURCE_ON_TILE = 598`
 - `services/cooldown.py` — `wait_for_cooldown`, `parse_cooldown`, `remaining_seconds`
 - `services/movement.py` — `get_position`, `move_character`
-- `services/gathering.py` — `gather`, `parse_gathered_items`
+- `services/gathering.py` — `gather`, `parse_gathered_items`; 598 → `invalidate_cache()`
 - `services/inventory.py` — `get_inventory`, `free_slots`, `find_item`, `inventory_delta`
 - `services/bank.py` — `deposit_item`, `withdraw_item`, `deposit_gold`, `bank_delta`
 - `services/rest.py` — `rest`, `get_hp`, `is_full_hp`
 - `services/combat.py` — `fight`, `parse_fight_result`, `is_win`, `is_loss`
+- `services/character.py` — `get_character_profile`, `get_skill_level`, `get_equipment`, `has_skill_level`
+- `services/crafting.py` — `craft`, `parse_craft_result`, `get_item_info`, `has_materials`
+- `services/tasks.py` — `get_task_state`, `accept_task`, `complete_task`, `is_task_complete`
+- `services/multi_char.py` — `get_all_characters`, `find_ready_characters`, `sleep_until_next_ready`
+- `services/map_cache.py` — кэш 1428 тайлов, `find_content`, TTL 24ч, инвалидация по 598
+- `services/scenario.py` — `ROLES`, `ROLE_RESOURCE`, `run_dispatch_loop`, цикл-функции по роли
 
-**Тесты (34 fast + 1 long):**
-- `tests/test_smoke.py` — 8 smoke-тестов (эндпоинты всех доменов)
-- `tests/test_movement.py` — 4 теста (490 и 499 разделены)
-- `tests/test_gathering.py` — 4 теста (delta инвентаря, end-to-end)
-- `tests/test_inventory.py` — 5 + 1 long (fill → 497)
-- `tests/test_bank.py` — 4 теста (deposit/withdraw delta)
-- `tests/test_rest.py` — 4 теста (HP recovery post-combat)
-- `tests/test_combat.py` — 5 тестов (win/loss/xp/hp delta)
+**Скрипты:**
+- `scripts/dispatch.py` — запуск dispatch loop (`--cycles N`)
+- `scripts/discover_map.py` — поиск тайлов по коду (`--refresh`, `--all`)
 
-**Игровые факты зафиксированные в тестах:**
-- Copper Rocks: `(2, 0)`, mining level 1, drops `copper_ore`
-- Bank tile: `(4, 1)`
-- Chicken: `(0, 1)`, level 1, 60 HP
-- Bank deposit/withdraw: `/action/bank/deposit/item`, list payload
-- Fight result: `"win"` или `"loss"` (не `"lose"`)
-- Fight/death cooldown: до ~100s, `max_wait=120s`
+**Тесты:**
+- `tests/test_smoke.py` — 13 smoke-тестов (все домены включая crafting/tasks/maps)
+- `tests/test_movement.py` — 4 теста
+- `tests/test_gathering.py` — 4 теста
+- `tests/test_inventory.py` — 5 fast + 1 long
+- `tests/test_bank.py` — 4 теста
+- `tests/test_rest.py` — 4 теста
+- `tests/test_combat.py` — 5 тестов
+- `tests/test_character.py` — 4 теста (профиль, навыки, экипировка)
+- `tests/test_crafting.py` — статeful крафт-тесты
+- `tests/test_tasks.py` — task accept/complete flow
+- `tests/test_multi_char.py` — 4 теста (dispatch поля, cooldown логика)
+- `tests/test_map_cache.py` — 10 unit-тестов + 3 smoke (GET /maps)

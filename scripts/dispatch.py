@@ -7,8 +7,8 @@ Usage:
     python scripts/dispatch.py --cycles 3  # run 3 dispatch iterations and stop
 
 Roles are defined in services/scenario.py → ROLES dict.
-Resource tile TODOs (woodcutting, alchemy) are logged as warnings and skipped
-until task 18.1 (map discovery) fills them in.
+Resource codes are in ROLE_RESOURCE — tile coordinates are resolved at runtime
+from the map cache (data/maps.json). Run scripts/discover_map.py to refresh.
 """
 
 import argparse

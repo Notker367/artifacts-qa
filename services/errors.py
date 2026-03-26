@@ -18,6 +18,7 @@ NO_TASK = 487          # character has no task assigned
 TASK_NOT_COMPLETE = 488  # task is active but objective not yet met
 INSUFFICIENT_GOLD = 492
 SKILL_LEVEL_TOO_LOW = 493
+NO_RESOURCE_ON_TILE = 598  # character is on a tile with no gatherable resource
 
 # Human-readable labels for known error codes
 _ERROR_LABELS = {
@@ -36,6 +37,7 @@ _ERROR_LABELS = {
     TASK_NOT_COMPLETE: "task objective not yet met",
     INSUFFICIENT_GOLD: "not enough gold",
     SKILL_LEVEL_TOO_LOW: "skill level too low for this craft",
+    NO_RESOURCE_ON_TILE: "no gatherable resource on this tile",
 }
 
 

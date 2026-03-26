@@ -102,11 +102,59 @@ Prioritize these scenario types:
 
 ## Known map tiles
 
+Tile data is cached in `data/maps.json` via `services/map_cache.py`.
+Run `python scripts/discover_map.py` to refresh. Key tiles below for quick reference.
+
+### Infrastructure
 | Location | Coordinates | Notes |
 |----------|-------------|-------|
-| Copper Rocks | (2, 0) | mining level 1, drops copper_ore |
-| Chicken | (0, 1) | combat level 1, 60 HP |
 | Bank | (4, 1) | nearest bank from start |
+| Bank | (7, 13) | forest area |
+| Bank | (-2, 19) | desert island |
+| Taskmaster (monsters) | (1, 2) | accept/complete monster tasks |
+| Taskmaster (items) | (4, 13) | accept/complete item tasks |
+
+### Combat (monsters)
+| Monster | Coordinates | Notes |
+|---------|-------------|-------|
+| Chicken | (0, 1) | level 1, 60 HP |
+| Cow | (0, 2) | level 1 |
+| Green Slime | (0, -1) (3, -2) | level 1–2 |
+| Wolf | (-3, 0) (-2, 1) | higher level |
+
+### Mining
+| Resource | Coordinates |
+|----------|-------------|
+| copper_rocks | (2, 0) |
+| iron_rocks | (1, 7) |
+| coal_rocks | (1, 6) |
+| gold_rocks | (3, -5) (5, -4) — underground |
+| mithril_rocks | (-3, 4) (-2, 5) — underground |
+
+### Woodcutting
+| Resource | Coordinates |
+|----------|-------------|
+| ash_tree | (-1, 0) (6, 1) |
+| birch_tree | (3, 5) (-1, 6) |
+| spruce_tree | (2, 6) (1, 9) |
+| maple_tree | (1, 12) (4, 14) |
+
+### Fishing
+| Resource | Coordinates |
+|----------|-------------|
+| gudgeon_spot | (4, 2) |
+| shrimp_spot | (5, 2) |
+| salmon_spot | (-3, -4) (-2, -4) |
+| trout_spot | (7, 12) |
+| bass_spot | (6, 12) |
+
+### Alchemy (plants)
+| Resource | Coordinates |
+|----------|-------------|
+| sunflower_field | (2, 2) |
+| glowstem | (1, 10) |
+| nettle | (7, 14) |
+| torch_cactus | (-3, 18) (0, 19) |
 
 ## Cooldown facts
 - Gathering cooldown: ~30s
