@@ -15,8 +15,8 @@ After startup the dispatch loop runs indefinitely (or --cycles N iterations):
 
 Current farm config — update roles and resources as characters level up:
 
-  Furiba      combat      chicken / (0,1)        task: in progress (3/238)
-  Fussat      combat      chicken / (0,1)        task: needs accepting
+  Furiba      combat      chicken / (0,1)        task: monster task
+  Fussat      fishing     gudgeon_spot / (4,2)   no rod yet → may get 598
   Velikossat  woodcutting ash_tree / (-1,0)      no tool yet → may get 598
   Ognerot     mining      copper_rocks / (2,0)   no tool yet → may get 598
   Mikrochelo  alchemy     sunflower_field / (2,2) no tool yet → may get 598
@@ -58,7 +58,7 @@ logger = logging.getLogger("farm")
 # Role per character. Change one line to reassign.
 FARM_ROLES = {
     "Furiba":     "combat",
-    "Fussat":     "combat",
+    "Fussat":     "fishing",
     "Velikossat": "woodcutting",
     "Ognerot":    "mining",
     "Mikrochelo": "alchemy",
