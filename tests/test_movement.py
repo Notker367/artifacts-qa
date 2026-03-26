@@ -1,25 +1,26 @@
 # Movement tests for Artifacts MMO.
 # Move is a POST action — it changes character location and triggers cooldown.
-# 490 = already at destination (valid game state, not an error).
-# 499 = character on cooldown from a previous action.
-# Tests do not sleep — cooldown is accepted as a valid outcome where applicable.
+# All stateful tests call wait_for_cooldown before acting so results are deterministic.
+# 490 and 499 are tested as distinct scenarios, not lumped together.
 
 import logging
 
 from services.errors import ALREADY_AT_DESTINATION, ON_COOLDOWN
+from services.cooldown import wait_for_cooldown
 from services.movement import get_position, move_character, is_already_at_destination
 
 logger = logging.getLogger(__name__)
 
-# Coordinates used across movement tests.
-# (0, 1) is a known walkable tile; adjust if the map changes.
-TARGET_X, TARGET_Y = 0, 1
+# Two distinct walkable tiles used to produce controlled state transitions.
+# A → B tests successful move; B → B tests already-at-destination (490).
+TILE_A = (0, 0)
+TILE_B = (0, 1)
 
 
 def test_get_current_position(client, character_name):
     """
     GET /characters/{name} must return a valid position with integer x and y.
-    This is the baseline read — no action triggered, no cooldown involved.
+    No action triggered — baseline read, no cooldown involved.
     """
     position = get_position(client, character_name)
 
@@ -30,70 +31,60 @@ def test_get_current_position(client, character_name):
     logger.info("current position: x=%d y=%d", position["x"], position["y"])
 
 
-def test_move_returns_expected_status(client, character_name):
+def test_move_changes_position(client, character_name):
     """
-    Moving to (TARGET_X, TARGET_Y) must return 200, 490, or 499.
-    200 = moved successfully.
-    490 = already there (valid — character is where we wanted it).
-    499 = on cooldown from a prior action (valid — game enforces action sequencing).
+    After a successful move, GET /characters must reflect the new coordinates.
+    Verifies that the action actually updates server-side character state.
     """
-    response = move_character(client, character_name, TARGET_X, TARGET_Y)
+    wait_for_cooldown(client, character_name)
+    move_character(client, character_name, *TILE_A)
 
-    assert response.status_code in (200, ALREADY_AT_DESTINATION, ON_COOLDOWN), (
-        f"unexpected status {response.status_code}: {response.text}"
+    wait_for_cooldown(client, character_name)
+    response = move_character(client, character_name, *TILE_B)
+
+    assert response.status_code == 200, (
+        f"expected 200 after move, got {response.status_code}: {response.text}"
     )
-    logger.info("move to (%d, %d): status=%d", TARGET_X, TARGET_Y, response.status_code)
+
+    position = get_position(client, character_name)
+    assert position["x"] == TILE_B[0] and position["y"] == TILE_B[1], (
+        f"expected position {TILE_B}, got {position}"
+    )
+    logger.info("position after move: %s", position)
 
 
 def test_move_already_at_destination_returns_490(client, character_name):
     """
-    Moving to the current position must return 490.
-    We first move to TARGET, then move there again — the second call must return 490
-    (unless we're on cooldown, in which case 499 is also acceptable).
+    Moving to the tile the character is already on must return 490.
+    We move to TILE_B, wait for cooldown, then move there again — must get 490.
     """
-    # First move — puts us at TARGET or confirms we're already there
-    first = move_character(client, character_name, TARGET_X, TARGET_Y)
-    assert first.status_code in (200, ALREADY_AT_DESTINATION, ON_COOLDOWN), (
-        f"unexpected status on first move: {first.status_code}"
+    wait_for_cooldown(client, character_name)
+    move_character(client, character_name, *TILE_B)
+
+    wait_for_cooldown(client, character_name)
+    response = move_character(client, character_name, *TILE_B)
+
+    assert response.status_code == ALREADY_AT_DESTINATION, (
+        f"expected 490 (already at destination), got {response.status_code}: {response.text}"
     )
-
-    # Second move to same coordinates — game must reject it as already-at-destination
-    second = move_character(client, character_name, TARGET_X, TARGET_Y)
-    assert second.status_code in (ALREADY_AT_DESTINATION, ON_COOLDOWN), (
-        f"expected 490 or 499 on repeated move, got {second.status_code}: {second.text}"
-    )
-    logger.info("repeated move to (%d, %d): status=%d", TARGET_X, TARGET_Y, second.status_code)
+    logger.info("repeated move to %s correctly returned 490", TILE_B)
 
 
-def test_move_state_visible_before_and_after(client, character_name):
+def test_move_on_cooldown_returns_499(client, character_name):
     """
-    After a successful move, position from GET /characters must reflect the new coordinates.
-    If cooldown blocks the move, we skip the position assertion and log it.
-
-    This verifies that the move action actually updates server-side character state,
-    not just that the API returns 200.
+    Sending a move immediately after another move must return 499 (on cooldown).
+    We wait for clean state, move to TILE_A, then immediately move to TILE_B
+    without waiting — the second call must be rejected with 499.
     """
-    position_before = get_position(client, character_name)
-    logger.info("position before move: %s", position_before)
-
-    response = move_character(client, character_name, TARGET_X, TARGET_Y)
-    logger.info("move response: status=%d", response.status_code)
-
-    if response.status_code == ON_COOLDOWN:
-        logger.info("character on cooldown — skipping post-move position check")
-        return
-
-    assert response.status_code in (200, ALREADY_AT_DESTINATION), (
-        f"unexpected move status: {response.status_code}"
+    wait_for_cooldown(client, character_name)
+    first = move_character(client, character_name, *TILE_A)
+    assert first.status_code == 200, (
+        f"first move must succeed to set up cooldown, got {first.status_code}"
     )
 
-    position_after = get_position(client, character_name)
-    logger.info("position after move: %s", position_after)
-
-    # After a move (or confirmed already-there), position must match the target
-    assert position_after["x"] == TARGET_X, (
-        f"expected x={TARGET_X}, got x={position_after['x']}"
+    # No wait — fire immediately while cooldown is active
+    second = move_character(client, character_name, *TILE_B)
+    assert second.status_code == ON_COOLDOWN, (
+        f"expected 499 (on cooldown), got {second.status_code}: {second.text}"
     )
-    assert position_after["y"] == TARGET_Y, (
-        f"expected y={TARGET_Y}, got y={position_after['y']}"
-    )
+    logger.info("immediate second move correctly returned 499")
