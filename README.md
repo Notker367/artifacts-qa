@@ -47,10 +47,16 @@ ARTIFACTS_CHARACTER=your_character_name
 ## Run tests
 
 ```bash
-pytest
-pytest -v                    # verbose output
-pytest tests/test_character.py  # single file
+pytest                              # all fast tests (long tests excluded by default)
+pytest -v                           # verbose output
+pytest -v -s tests/test_movement.py # single file with live logs
+pytest -m long                      # only long-running tests (overnight runs)
+pytest -m ""                        # everything, including long tests
+pytest -v -s -x tests/test_combat.py  # stop on first failure
 ```
+
+Long tests (`@pytest.mark.long`) cover multi-step scenarios like inventory fill detection
+or gather-many + bank deposit flows. They are excluded from the default `pytest` run.
 
 ## Implementation phases
 
