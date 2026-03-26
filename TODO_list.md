@@ -127,18 +127,31 @@
   - один поток задания проверен end-to-end
   - task-хелперы переиспользуемы в сценариях
 
-- [ ] **16. Мультиперсонаж** (`feat(multi-char): add multi-character state tracking`)
+- [x] **16. Мультиперсонаж** (`feat(multi-char): add multi-character state tracking`)
   - получить список всех персонажей аккаунта
   - читать состояние каждого: HP, позиция, cooldown, инвентарь, навыки
   - выбирать, кто готов к действию (cooldown expired + нужный скилл)
   - логи чётко показывают кто что делает
   - основа для параллельных сценариев
 
-- [ ] **17. Менеджер сценариев** (`feat(infra): add lightweight scenario orchestration helper`)
-  - определить упорядоченные шаги с предусловиями
-  - прерывание при невосстановимой ошибке
-  - многошаговые сценарии читаемы без copy-paste
-  - использует профиль персонажа + мультиперс
+- [x] **17. Менеджер сценариев** (`feat(infra): add lightweight scenario orchestration helper`)
+  - `ROLES` dict: имя персонажа → роль (combat / mining / woodcutting / alchemy)
+  - cycle-функции по роли: `run_combat_cycle`, `run_mining_cycle`, `run_woodcutting_cycle`, `run_alchemy_cycle`
+  - каждый cycle: wait → move → action → post-action check (HP, inventory, task)
+  - `run_dispatch_loop`: читает всех персонажей, запускает cycle для готовых, спит до следующего
+  - ошибка одного персонажа не останавливает loop — логируется, остальные продолжают
+  - `scripts/dispatch.py` — запускаемый вручную скрипт для проверки loop
+  - тайлы ресурсов для woodcutting/alchemy — заглушки до пункта 18.1
+
+- [ ] **18.1. Карта ресурсов** (`feat(infra): discover and document resource tile coordinates`)
+  - найти тайлы через `GET /maps?content_type=resource` и `GET /resources`
+  - задокументировать координаты для всех ролей:
+    - mining: Copper Rocks `(2, 0)` ✅ — найти Iron/Coal для роста
+    - woodcutting: тайл с деревьями (axe) — `(?, ?)` ❓
+    - fishing: тайл с рыбой (net) — `(?, ?)` ❓
+    - alchemy: тайл с растениями (gloves) — `(?, ?)` ❓
+  - добавить константы в `services/scenario.py` или отдельный `services/map_data.py`
+  - обновить CLAUDE.md раздел Known map tiles
 
 ---
 
