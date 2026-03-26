@@ -35,6 +35,15 @@ def test_move_endpoint_reachable(client, character_name):
     )
 
 
+# --- Bank ---
+
+def test_bank_items_endpoint_reachable(client):
+    """GET /my/bank/items must return 200 with a data envelope for an authenticated account."""
+    response = client.get("/my/bank/items")
+    assert response.status_code == 200
+    assert "data" in response.json()
+
+
 # --- Gathering ---
 
 def test_gather_endpoint_reachable(client, character_name):

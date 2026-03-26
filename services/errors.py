@@ -13,6 +13,7 @@ INVENTORY_FULL = 497
 CHARACTER_NOT_FOUND = 498
 ON_COOLDOWN = 499
 CHARACTER_LOCKED = 486
+INSUFFICIENT_GOLD = 492
 
 # Human-readable labels for known error codes
 _ERROR_LABELS = {
@@ -26,6 +27,7 @@ _ERROR_LABELS = {
     CHARACTER_NOT_FOUND: "character not found",
     ON_COOLDOWN: "character is on cooldown",
     CHARACTER_LOCKED: "character is locked",
+    INSUFFICIENT_GOLD: "not enough gold",
 }
 
 
