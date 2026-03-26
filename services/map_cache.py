@@ -246,6 +246,17 @@ def get_map_cache(client, force: bool = False, content_type: str = None) -> dict
 # Query helpers
 # ---------------------------------------------------------------------------
 
+def find_content(cache: dict, code: str) -> list:
+    """
+    Return all tiles with this content_code, regardless of content_type.
+    Use when you know the code but not the type — works for resources, monsters, buildings.
+    Example: find_content(cache, "chicken")      → monster tile(s)
+             find_content(cache, "ash_tree")     → resource tile(s)
+             find_content(cache, "bank")         → bank tile(s)
+    """
+    return [t for t in cache.get("tiles", []) if t.get("content_code") == code]
+
+
 def find_tiles(cache: dict, content_type: str, content_code: str = None) -> list:
     """
     Return all tiles matching content_type, optionally narrowed by content_code.

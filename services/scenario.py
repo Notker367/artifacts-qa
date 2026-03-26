@@ -3,11 +3,14 @@
 #
 # Design:
 #   - ROLES dict: character name → role string (change one line to reassign)
+#   - ROLE_RESOURCE dict: role → content_code — no hardcoded coordinates
+#   - _resolve_tile: looks up (x, y) from cache at call time using the content code
 #   - cycle functions: one full action cycle per role (move → act → post-check)
-#   - dispatch loop: finds ready characters, runs their cycle, sleeps until next
+#   - dispatch loop: builds cache once per iteration, runs ready characters, sleeps until next
 #   - errors per character are logged and skipped — one broken char never stops the loop
 #
-# Resource tile placeholders (marked TODO) are filled in at task 18.1 (map discovery).
+# To change which tile a role targets: edit ROLE_RESOURCE, not coordinates.
+# To change which character does what: edit ROLES, not cycle logic.
 
 import logging
 import time
@@ -19,6 +22,7 @@ from services.combat import fight, parse_fight_result, is_win
 from services.rest import get_hp, rest
 from services.inventory import get_inventory, free_slots
 from services.bank import deposit_item, find_bank_item
+from services.map_cache import get_map_cache, find_content
 from services.tasks import (
     get_task_state,
     has_active_task,
@@ -44,22 +48,50 @@ ROLES = {
     "Mikrochelo": "alchemy",
 }
 
-# --- Known map tiles ---
-MONSTER_TILE = (0, 1)          # Chicken, level 1 — combat target
-BANK_TILE = (4, 1)             # nearest bank
-MONSTERS_TASKMASTER_TILE = (1, 2)  # accept/complete monster tasks
-MINING_TILE = (2, 0)           # Copper Rocks, mining level 1
+# --- Role → content code ---
+# These are content_code values from the map cache, not coordinates.
+# Tile coordinates are resolved at runtime via _resolve_tile.
+# To target a different resource or monster: change the code here.
+ROLE_RESOURCE = {
+    "combat":      "chicken",         # monster, level 1
+    "mining":      "copper_rocks",    # resource, mining level 1
+    "woodcutting": "ash_tree",        # resource, woodcutting level 1
+    "fishing":     "gudgeon_spot",    # resource, fishing level 1
+    "alchemy":     "sunflower_field", # resource, alchemy level 1
+}
 
-WOODCUTTING_TILE = (-1, 0)     # ash_tree, woodcutting level 1 — closest to start
-FISHING_TILE = (4, 2)          # gudgeon_spot, fishing level 1 — closest lake
-ALCHEMY_TILE = (2, 2)          # sunflower_field, alchemy level 1 — closest plant tile
+# --- Fixed infrastructure tiles ---
+# These are NPC/building tiles that don't belong to a gathering role.
+# They stay hardcoded because they are stable map features, not targets.
+BANK_TILE = (4, 1)                    # nearest bank from starting area
+MONSTERS_TASKMASTER_TILE = (1, 2)     # accept/complete monster tasks
 
 # --- Thresholds ---
 HP_THRESHOLD = 0.3     # rest when HP drops below 30% to avoid death penalty cooldown
 DEPOSIT_THRESHOLD = 5  # deposit to bank when fewer than 5 free inventory slots remain
 
 
-# --- Post-action helpers ---
+# ---------------------------------------------------------------------------
+# Tile resolver
+# ---------------------------------------------------------------------------
+
+def _resolve_tile(cache: dict, code: str) -> tuple | None:
+    """
+    Return (x, y) of the first tile with this content_code.
+    Works for any content type — resource, monster, workshop, etc.
+    Logs an error and returns None if the code is not found in the cache.
+    A None result signals the caller to skip the cycle rather than crash.
+    """
+    tiles = find_content(cache, code)
+    if not tiles:
+        logger.error("_resolve_tile: no tile found for %r — cache may be stale", code)
+        return None
+    return (tiles[0]["x"], tiles[0]["y"])
+
+
+# ---------------------------------------------------------------------------
+# Post-action helpers
+# ---------------------------------------------------------------------------
 
 def _maybe_rest(client, character_name: str) -> None:
     """Rest if HP is below threshold. Waits for cooldown before and after."""
@@ -95,7 +127,7 @@ def _maybe_deposit_all(client, character_name: str) -> None:
 def _maybe_complete_task(client, character_name: str) -> None:
     """
     If the character's task is complete, go to taskmaster, turn it in, accept a new one.
-    Only handles monster tasks — items tasks require a separate taskmaster tile.
+    Only handles monster tasks — item tasks require a separate taskmaster tile.
     """
     state = get_task_state(client, character_name)
     if not has_active_task(state) or not is_task_complete(state):
@@ -126,18 +158,24 @@ def _maybe_complete_task(client, character_name: str) -> None:
         logger.warning("%s: accept_task unexpected status %d", character_name, response.status_code)
 
 
-# --- Cycle functions ---
+# ---------------------------------------------------------------------------
+# Cycle functions
+# ---------------------------------------------------------------------------
 
-def run_combat_cycle(client, character_name: str) -> None:
+def run_combat_cycle(client, character_name: str, cache: dict) -> None:
     """
     One combat action cycle:
-      1. move to monster tile
-      2. fight
+      1. resolve monster tile from cache
+      2. move and fight
       3. rest if HP below threshold
       4. complete + re-accept task if objective met
     """
+    tile = _resolve_tile(cache, ROLE_RESOURCE["combat"])
+    if tile is None:
+        return
+
     wait_for_cooldown(client, character_name)
-    move_character(client, character_name, *MONSTER_TILE)
+    move_character(client, character_name, *tile)
 
     wait_for_cooldown(client, character_name)
     response = fight(client, character_name)
@@ -157,17 +195,22 @@ def run_combat_cycle(client, character_name: str) -> None:
     _maybe_complete_task(client, character_name)
 
 
-def run_mining_cycle(client, character_name: str) -> None:
+def _run_gathering_cycle(client, character_name: str, cache: dict, role: str) -> None:
     """
-    One mining action cycle:
+    Generic gathering cycle used by mining, woodcutting, fishing, alchemy.
+    Resolves tile from cache using the role's content code.
       1. deposit if inventory is nearly full
-      2. move to ore tile
+      2. move to resource tile
       3. gather
     """
+    tile = _resolve_tile(cache, ROLE_RESOURCE[role])
+    if tile is None:
+        return
+
     _maybe_deposit_all(client, character_name)
 
     wait_for_cooldown(client, character_name)
-    move_character(client, character_name, *MINING_TILE)
+    move_character(client, character_name, *tile)
 
     wait_for_cooldown(client, character_name)
     response = gather(client, character_name)
@@ -179,61 +222,40 @@ def run_mining_cycle(client, character_name: str) -> None:
         logger.warning("%s: gather returned %d", character_name, response.status_code)
 
 
-def run_woodcutting_cycle(client, character_name: str) -> None:
-    """
-    One woodcutting action cycle:
-      1. deposit if inventory is nearly full
-      2. move to ash_tree tile (-1, 0)
-      3. gather
-    """
-    _maybe_deposit_all(client, character_name)
-
-    wait_for_cooldown(client, character_name)
-    move_character(client, character_name, *WOODCUTTING_TILE)
-
-    wait_for_cooldown(client, character_name)
-    response = gather(client, character_name)
-
-    if response.status_code == 200:
-        inventory = get_inventory(client, character_name)
-        logger.info("%s: gathered | free slots: %d", character_name, free_slots(inventory))
-    else:
-        logger.warning("%s: gather returned %d", character_name, response.status_code)
+def run_mining_cycle(client, character_name: str, cache: dict) -> None:
+    """Mining cycle — targets ROLE_RESOURCE['mining'] (default: copper_rocks)."""
+    _run_gathering_cycle(client, character_name, cache, "mining")
 
 
-def run_alchemy_cycle(client, character_name: str) -> None:
-    """
-    One alchemy/plant gathering action cycle:
-      1. deposit if inventory is nearly full
-      2. move to sunflower_field tile (2, 2)
-      3. gather
-    """
-    _maybe_deposit_all(client, character_name)
-
-    wait_for_cooldown(client, character_name)
-    move_character(client, character_name, *ALCHEMY_TILE)
-
-    wait_for_cooldown(client, character_name)
-    response = gather(client, character_name)
-
-    if response.status_code == 200:
-        inventory = get_inventory(client, character_name)
-        logger.info("%s: gathered | free slots: %d", character_name, free_slots(inventory))
-    else:
-        logger.warning("%s: gather returned %d", character_name, response.status_code)
+def run_woodcutting_cycle(client, character_name: str, cache: dict) -> None:
+    """Woodcutting cycle — targets ROLE_RESOURCE['woodcutting'] (default: ash_tree)."""
+    _run_gathering_cycle(client, character_name, cache, "woodcutting")
 
 
-# --- Role dispatcher ---
+def run_fishing_cycle(client, character_name: str, cache: dict) -> None:
+    """Fishing cycle — targets ROLE_RESOURCE['fishing'] (default: gudgeon_spot)."""
+    _run_gathering_cycle(client, character_name, cache, "fishing")
+
+
+def run_alchemy_cycle(client, character_name: str, cache: dict) -> None:
+    """Alchemy cycle — targets ROLE_RESOURCE['alchemy'] (default: sunflower_field)."""
+    _run_gathering_cycle(client, character_name, cache, "alchemy")
+
+
+# ---------------------------------------------------------------------------
+# Role dispatcher
+# ---------------------------------------------------------------------------
 
 _CYCLE_FUNCTIONS = {
     "combat":      run_combat_cycle,
     "mining":      run_mining_cycle,
     "woodcutting": run_woodcutting_cycle,
+    "fishing":     run_fishing_cycle,
     "alchemy":     run_alchemy_cycle,
 }
 
 
-def run_cycle(client, character_name: str, role: str) -> None:
+def run_cycle(client, character_name: str, role: str, cache: dict) -> None:
     """
     Run one action cycle for the given character based on their role.
     Unknown roles are logged and skipped without raising.
@@ -242,25 +264,28 @@ def run_cycle(client, character_name: str, role: str) -> None:
     if cycle_fn is None:
         logger.warning("%s: unknown role %r — skipping", character_name, role)
         return
-    cycle_fn(client, character_name)
+    cycle_fn(client, character_name, cache)
 
 
-# --- Dispatch loop ---
+# ---------------------------------------------------------------------------
+# Dispatch loop
+# ---------------------------------------------------------------------------
 
 def run_dispatch_loop(client, roles: dict = None, max_cycles: int = None) -> None:
     """
     Main dispatch loop. Runs indefinitely (or until max_cycles is reached).
     Each iteration:
-      1. fetch all character states in one API call
-      2. run one cycle for each character that is ready
-      3. sleep exactly until the next character becomes available
+      1. load or refresh the map cache (fetches from API only when stale)
+      2. fetch all character states in one API call
+      3. run one cycle for each character that is ready
+      4. sleep exactly until the next character becomes available
 
     Errors per character are caught, logged, and skipped.
     One broken character never stops the loop.
 
     Args:
-        client: ArtifactsClient instance
-        roles: override ROLES dict (defaults to module-level ROLES)
+        client:     ArtifactsClient instance
+        roles:      override ROLES dict (defaults to module-level ROLES)
         max_cycles: stop after this many total dispatch iterations (None = run forever)
     """
     active_roles = roles if roles is not None else ROLES
@@ -269,6 +294,9 @@ def run_dispatch_loop(client, roles: dict = None, max_cycles: int = None) -> Non
     logger.info("dispatch loop started | roles: %s", active_roles)
 
     while True:
+        # Cache is loaded once per iteration — fresh file read, no API call unless stale
+        cache = get_map_cache(client)
+
         characters = get_all_characters(client)
         ready = find_ready_characters(characters)
 
@@ -280,7 +308,7 @@ def run_dispatch_loop(client, roles: dict = None, max_cycles: int = None) -> Non
 
             logger.info("--- %s [%s] ---", name, role)
             try:
-                run_cycle(client, name, role)
+                run_cycle(client, name, role, cache)
             except Exception as exc:
                 logger.error("%s: cycle failed — %s: %s", name, type(exc).__name__, exc)
 
