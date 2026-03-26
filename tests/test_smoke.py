@@ -44,6 +44,16 @@ def test_bank_items_endpoint_reachable(client):
     assert "data" in response.json()
 
 
+# --- Rest ---
+
+def test_rest_endpoint_reachable(client, character_name):
+    """POST /my/{name}/action/rest must respond with a known game code."""
+    response = client.post(f"/my/{character_name}/action/rest")
+    assert response.status_code in (200, 499), (
+        f"unexpected status from rest endpoint: {response.status_code}"
+    )
+
+
 # --- Gathering ---
 
 def test_gather_endpoint_reachable(client, character_name):
