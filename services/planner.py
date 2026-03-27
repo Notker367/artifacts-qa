@@ -23,23 +23,42 @@ import uuid
 
 from services.goal_store import (
     get_goals,
+    insert_goal,
     update_goal_status,
     insert_task,
     get_active_task_quantity,
+    task_exists,
+    sub_goal_exists,
     reserve,
     release_reservations_for_goal,
     expire_stale_claims,
 )
 from services.goals import (
+    Goal,
     GoalStatus,
     GoalType,
     TaskType,
     make_gather_task,
-    PlannedTask,
+    make_craft_task,
+    make_equip_task,
+    make_fight_task,
 )
-from services.world_state import build_world_state, bank_quantity, available_in_bank
-from services.map_cache import get_map_cache, find_content
-from services.item_data import resource_for_item
+from services.world_state import (
+    build_world_state,
+    bank_quantity,
+    available_in_bank,
+    character_by_name,
+)
+from services.map_cache import get_map_cache, find_content, find_tiles
+from services.item_data import (
+    resource_for_item,
+    workshop_code_for_skill,
+    train_resource_for_skill,
+    drop_for_resource,
+)
+from services.item_cache import get_cached_recipe, get_craft_skill, get_cached_item
+from services.inventory import find_item
+from services.equipment import is_item_equipped
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +116,11 @@ def _plan_goal(goal: dict, world_state: dict, client) -> None:
     if goal_type == GoalType.COLLECT:
         _plan_collect(goal, world_state, client)
     elif goal_type == GoalType.CRAFT:
-        _block_goal(goal["id"], "craft goal not yet implemented")
+        _plan_craft(goal, world_state, client)
     elif goal_type == GoalType.EQUIP:
-        _block_goal(goal["id"], "equip goal not yet implemented")
+        _plan_equip(goal, world_state, client)
     elif goal_type == GoalType.LEVEL:
-        _block_goal(goal["id"], "level goal not yet implemented")
+        _plan_level(goal, world_state, client)
     else:
         _block_goal(goal["id"], f"unknown goal type: {goal_type!r}")
 
@@ -195,6 +214,265 @@ def _plan_collect(goal: dict, world_state: dict, client) -> None:
             goal_id[:8], task.id[:8], item_code, chunk,
         )
         needed -= chunk
+
+
+# ---------------------------------------------------------------------------
+# Craft goal planner
+# ---------------------------------------------------------------------------
+
+# How many craft actions to put in one task.
+# Craft actions are fast (~4s cooldown) so a larger batch per task is fine.
+CRAFT_BATCH = 10
+
+
+def _plan_craft(goal: dict, world_state: dict, client) -> None:
+    """
+    Plan a craft goal: craft item_code × target_quantity.
+
+    Completion: bank_qty >= target_quantity.
+
+    Flow:
+      1. Check recipe (block if none).
+      2. Check workshop tile exists in map cache (block if missing).
+      3. For each missing ingredient: spawn collect sub-goal if not already active.
+      4. If all materials available in bank (minus reservations): create craft task.
+    """
+    goal_id   = goal["id"]
+    item_code = goal["target_item_code"]
+    target    = goal["target_quantity"]
+
+    bank_qty = bank_quantity(world_state, item_code)
+    if bank_qty >= target:
+        update_goal_status(goal_id, GoalStatus.COMPLETED)
+        release_reservations_for_goal(goal_id)
+        logger.info("planner: goal %s COMPLETED — craft %s × %d (bank: %d)",
+                    goal_id[:8], item_code, target, bank_qty)
+        return
+
+    recipe = get_cached_recipe(client, item_code)
+    if not recipe:
+        _block_goal(goal_id, f"no recipe found for {item_code!r}")
+        return
+
+    craft_skill, required_level = get_craft_skill(client, item_code)
+    if not craft_skill:
+        _block_goal(goal_id, f"could not determine craft skill for {item_code!r}")
+        return
+
+    workshop_code = workshop_code_for_skill(craft_skill)
+    if not workshop_code:
+        _block_goal(goal_id, f"no workshop code mapping for skill {craft_skill!r}")
+        return
+    cache = get_map_cache(client)
+    if not find_content(cache, workshop_code):
+        _block_goal(goal_id,
+                    f"no workshop tile for {craft_skill!r} (code={workshop_code!r}) "
+                    f"— run discover_map.py to verify content_codes")
+        return
+
+    # How many crafts are still needed (account for in-flight craft tasks)
+    active_craft_qty = get_active_task_quantity(goal_id, item_code)
+    needed_crafts = target - bank_qty - active_craft_qty
+    if needed_crafts <= 0:
+        return
+
+    # Check materials and spawn sub-goals for any shortfalls
+    all_available = True
+    for ingredient in recipe:
+        mat_code = ingredient["code"]
+        mat_needed = ingredient["quantity"] * needed_crafts
+        avail = available_in_bank(world_state, mat_code)
+
+        if avail < mat_needed:
+            all_available = False
+            missing = mat_needed - avail
+            if not sub_goal_exists(goal_id, GoalType.COLLECT, mat_code):
+                sub = Goal.collect(mat_code, missing,
+                                   parent_goal_id=goal_id,
+                                   allowed_characters=goal.get("allowed_characters"))
+                insert_goal(sub.to_dict())
+                logger.info("planner: goal %s — spawned collect sub-goal for %s × %d",
+                            goal_id[:8], mat_code, missing)
+
+    if not all_available:
+        logger.info("planner: goal %s — craft %s waiting for materials",
+                    goal_id[:8], item_code)
+        return
+
+    # Materials ready — create craft task in batches
+    while needed_crafts > 0:
+        batch = min(needed_crafts, CRAFT_BATCH)
+        task = make_craft_task(
+            goal_id=goal_id,
+            item_code=item_code,
+            quantity=batch,
+            allowed=goal.get("allowed_characters"),
+        )
+        task.meta = {"craft_skill": craft_skill, "required_level": required_level}
+        insert_task(task.to_dict())
+        logger.info("planner: goal %s — created craft task %s for %s × %d",
+                    goal_id[:8], task.id[:8], item_code, batch)
+        needed_crafts -= batch
+
+
+# ---------------------------------------------------------------------------
+# Equip goal planner
+# ---------------------------------------------------------------------------
+
+def _plan_equip(goal: dict, world_state: dict, client) -> None:
+    """
+    Plan an equip goal: equip item_code on target_character.
+
+    Completion: item is already equipped on target_character.
+
+    Flow:
+      1. Already equipped → complete.
+      2. In character's inventory → create equip task.
+      3. In bank (available) → create equip task (executor will withdraw first).
+      4. Not found → spawn craft or collect sub-goal.
+    """
+    goal_id        = goal["id"]
+    item_code      = goal["target_item_code"]
+    target_char    = goal["target_character"]
+
+    if not target_char:
+        _block_goal(goal_id, "equip goal requires target_character")
+        return
+
+    char = character_by_name(world_state, target_char)
+    if char is None:
+        _block_goal(goal_id, f"character {target_char!r} not found in world state")
+        return
+
+    # Already equipped — done
+    if is_item_equipped(char, item_code):
+        update_goal_status(goal_id, GoalStatus.COMPLETED)
+        logger.info("planner: goal %s COMPLETED — %s already equipped on %s",
+                    goal_id[:8], item_code, target_char)
+        return
+
+    # Don't create duplicate tasks
+    if task_exists(goal_id, TaskType.EQUIP, item_code):
+        return
+
+    # Item in character's inventory → equip directly
+    if find_item(char.get("inventory", []), item_code) > 0:
+        task = make_equip_task(goal_id, item_code, target_char)
+        task.meta = {"source": "inventory"}
+        insert_task(task.to_dict())
+        logger.info("planner: goal %s — equip task (from inventory) for %s on %s",
+                    goal_id[:8], item_code, target_char)
+        return
+
+    # Item available in bank → equip task (executor withdraws first)
+    if available_in_bank(world_state, item_code) > 0:
+        task = make_equip_task(goal_id, item_code, target_char)
+        task.meta = {"source": "bank"}
+        insert_task(task.to_dict())
+        logger.info("planner: goal %s — equip task (from bank) for %s on %s",
+                    goal_id[:8], item_code, target_char)
+        return
+
+    # Not found anywhere — spawn a sub-goal to obtain the item
+    recipe = get_cached_recipe(client, item_code)
+    if recipe:
+        if not sub_goal_exists(goal_id, GoalType.CRAFT, item_code):
+            sub = Goal.craft(item_code, 1, parent_goal_id=goal_id)
+            insert_goal(sub.to_dict())
+            logger.info("planner: goal %s — spawned craft sub-goal for %s",
+                        goal_id[:8], item_code)
+    else:
+        if not sub_goal_exists(goal_id, GoalType.COLLECT, item_code):
+            sub = Goal.collect(item_code, 1, parent_goal_id=goal_id)
+            insert_goal(sub.to_dict())
+            logger.info("planner: goal %s — spawned collect sub-goal for %s",
+                        goal_id[:8], item_code)
+
+
+# ---------------------------------------------------------------------------
+# Level goal planner
+# ---------------------------------------------------------------------------
+
+# Fights per task for combat training. Small enough to re-check level often.
+FIGHTS_PER_TASK = 10
+
+
+def _plan_level(goal: dict, world_state: dict, client) -> None:
+    """
+    Plan a level goal: raise target_skill to target_level on target_character.
+
+    Completion: char's skill level >= target_level.
+
+    Approach:
+      - Gathering skills: create gather tasks using SKILL_TRAIN_RESOURCE.
+        One gather task at a time (task_exists guard) — planner re-evaluates
+        after each task completes and creates another if goal not yet done.
+      - Combat: create fight tasks of FIGHTS_PER_TASK each.
+      - Crafting skills (weaponcrafting, etc.): not yet supported — blocked.
+    """
+    goal_id      = goal["id"]
+    target_skill = goal["target_skill"]
+    target_level = goal["target_level"]
+    target_char  = goal["target_character"]
+
+    if not target_char:
+        _block_goal(goal_id, "level goal requires target_character")
+        return
+
+    char = character_by_name(world_state, target_char)
+    if char is None:
+        _block_goal(goal_id, f"character {target_char!r} not found in world state")
+        return
+
+    # Combat level uses the character's general `level` field
+    if target_skill == "combat":
+        current = char.get("level", 0)
+    else:
+        current = char.get(f"{target_skill}_level", 0)
+
+    if current >= target_level:
+        update_goal_status(goal_id, GoalStatus.COMPLETED)
+        logger.info("planner: goal %s COMPLETED — %s level %d on %s (target %d)",
+                    goal_id[:8], target_skill, current, target_char, target_level)
+        return
+
+    logger.info("planner: goal %s — level %s | current=%d target=%d on %s",
+                goal_id[:8], target_skill, current, target_level, target_char)
+
+    resource_code = train_resource_for_skill(target_skill)
+    if resource_code is None:
+        _block_goal(goal_id,
+                    f"no training resource for skill {target_skill!r} — "
+                    f"crafting skills must be levelled by crafting (not yet supported)")
+        return
+
+    cache = get_map_cache(client)
+    if not find_content(cache, resource_code):
+        _block_goal(goal_id,
+                    f"no map tile for training resource {resource_code!r} "
+                    f"— run discover_map.py")
+        return
+
+    allowed = [target_char]  # level goal is always character-specific
+
+    if target_skill == "combat":
+        if not task_exists(goal_id, TaskType.FIGHT, resource_code):
+            task = make_fight_task(goal_id, resource_code, FIGHTS_PER_TASK,
+                                   allowed=allowed)
+            insert_task(task.to_dict())
+            logger.info("planner: goal %s — created fight task × %d vs %s for %s",
+                        goal_id[:8], FIGHTS_PER_TASK, resource_code, target_char)
+    else:
+        item_code = drop_for_resource(resource_code)
+        if item_code is None:
+            _block_goal(goal_id, f"no drop mapping for resource {resource_code!r}")
+            return
+        if not task_exists(goal_id, TaskType.GATHER, item_code):
+            task = make_gather_task(goal_id, item_code, GATHER_CHUNK,
+                                    allowed=allowed)
+            insert_task(task.to_dict())
+            logger.info("planner: goal %s — created gather task %s × %d for %s",
+                        goal_id[:8], item_code, GATHER_CHUNK, target_char)
 
 
 # ---------------------------------------------------------------------------

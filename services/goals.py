@@ -226,3 +226,17 @@ def make_equip_task(goal_id: str, item_code: str,
         item_code=item_code, character_name=character_name,
         hard_assignment=True,
     )
+
+
+def make_fight_task(goal_id: str, monster_code: str, count: int,
+                    allowed: list[str] | None = None) -> PlannedTask:
+    """
+    Fight task: fight monster_code `count` times.
+    item_code holds the monster content_code (semantic re-use of the field).
+    Used by level goal for combat training.
+    """
+    return PlannedTask(
+        goal_id=goal_id, type=TaskType.FIGHT,
+        item_code=monster_code, quantity=count,
+        allowed_characters=allowed,
+    )

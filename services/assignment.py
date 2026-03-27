@@ -84,8 +84,10 @@ def score_character_for_task(char: dict, task: dict, world_state: dict) -> int:
     if preferred and name in preferred:
         score += _BONUS_PREFERRED
 
+    task_type = task.get("type")
+
     # --- Skill level bonus for gather tasks ---
-    if task.get("type") == TaskType.GATHER:
+    if task_type == TaskType.GATHER:
         item_code = task.get("item_code")
         resource_code = resource_for_item(item_code) if item_code else None
         if resource_code:
@@ -104,6 +106,22 @@ def score_character_for_task(char: dict, task: dict, world_state: dict) -> int:
                         if tile.get("x") == char_x and tile.get("y") == char_y:
                             score += _BONUS_AT_TILE
                             break
+
+    # --- Combat level bonus for fight tasks ---
+    # In Artifacts MMO, combat level is the character's general `level` field.
+    elif task_type == TaskType.FIGHT:
+        combat_level = char.get("level", 0)
+        score += combat_level * _BONUS_SKILL_MULT
+
+    # --- Craft skill bonus for craft tasks ---
+    # Craft tasks store the target item_code; skill is read from the item cache
+    # if available in world_state meta. Fallback: no skill bonus (base score only).
+    elif task_type == TaskType.CRAFT:
+        meta = task.get("meta") or {}
+        craft_skill = meta.get("craft_skill")
+        if craft_skill:
+            level = char.get(f"{craft_skill}_level", 0)
+            score += level * _BONUS_SKILL_MULT
 
     return score
 

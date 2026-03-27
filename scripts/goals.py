@@ -43,17 +43,24 @@ load_dotenv()
 
 from clients.artifacts_client import ArtifactsClient
 from services.cooldown import wait_for_cooldown
-from services.movement import move_character
+from services.movement import move_character, get_position
 from services.gathering import gather
+from services.combat import fight, parse_fight_result, is_win
+from services.rest import get_hp, rest
 from services.inventory import get_inventory_state, find_item
-from services.bank import deposit_item
+from services.bank import deposit_item, withdraw_item
+from services.crafting import craft as craft_action
 from services.multi_char import find_ready_characters, get_all_characters, sleep_until_next_ready
 from services.map_cache import find_content
-from services.item_data import resource_for_item
+from services.item_data import resource_for_item, workshop_code_for_skill
+from services.item_cache import get_cached_recipe, get_craft_skill
+from services.equipment import equip_item, get_slot_for_item, is_item_equipped
+from services.character import EQUIPMENT_SLOTS
 from services.goal_store import (
     init_db,
     insert_goal,
     get_goals,
+    get_tasks,
     update_task_status,
     release_reservations_for_task,
     claim_task,
@@ -209,15 +216,247 @@ def execute_gather_task(client, char_name: str, task: dict, cache: dict) -> None
         _deposit_all_to_bank(client, char_name, inventory)
 
 
+def execute_craft_task(client, char_name: str, task: dict, cache: dict) -> None:
+    """
+    Craft item_code × quantity:
+      1. Withdraw ingredients from bank.
+      2. Move to workshop tile.
+      3. Craft.
+      4. Deposit result to bank.
+    """
+    item_code = task["item_code"]
+    quantity  = task["quantity"]
+    meta      = task.get("meta") or {}
+
+    recipe = get_cached_recipe(client, item_code)
+    if not recipe:
+        raise RuntimeError(f"no recipe for {item_code!r}")
+
+    craft_skill, _ = get_craft_skill(client, item_code)
+    workshop_code  = workshop_code_for_skill(craft_skill)
+    if not workshop_code:
+        raise RuntimeError(f"no workshop code for skill {craft_skill!r}")
+
+    workshop_tiles = find_content(cache, workshop_code)
+    if not workshop_tiles:
+        raise RuntimeError(f"no workshop tile for {workshop_code!r} in map cache")
+    workshop_tile = workshop_tiles[0]["x"], workshop_tiles[0]["y"]
+
+    # --- Withdraw ingredients from bank ---
+    wait_for_cooldown(client, char_name)
+    move_character(client, char_name, *BANK_TILE)
+    for ingredient in recipe:
+        mat_code = ingredient["code"]
+        mat_qty  = ingredient["quantity"] * quantity
+        wait_for_cooldown(client, char_name)
+        resp = withdraw_item(client, char_name, mat_code, mat_qty)
+        if resp.status_code != 200:
+            raise RuntimeError(f"withdraw {mat_code} × {mat_qty} failed: {resp.status_code}")
+        logger.info("executor: %s withdrew %s × %d", char_name, mat_code, mat_qty)
+
+    # --- Move to workshop and craft ---
+    wait_for_cooldown(client, char_name)
+    move_character(client, char_name, *workshop_tile)
+    wait_for_cooldown(client, char_name)
+    resp = craft_action(client, char_name, item_code, quantity)
+    if resp.status_code != 200:
+        raise RuntimeError(f"craft {item_code} × {quantity} failed: {resp.status_code}")
+    logger.info("executor: %s crafted %s × %d", char_name, item_code, quantity)
+
+    # --- Deposit everything to bank ---
+    wait_for_cooldown(client, char_name)
+    move_character(client, char_name, *BANK_TILE)
+    inventory, _ = get_inventory_state(client, char_name)
+    for slot in inventory:
+        code = slot.get("code", "")
+        qty  = slot.get("quantity", 0)
+        if code and qty > 0:
+            wait_for_cooldown(client, char_name)
+            deposit_item(client, char_name, code, qty)
+            logger.info("executor: %s deposited %s × %d", char_name, code, qty)
+
+
+def execute_equip_task(client, char_name: str, task: dict, cache: dict) -> None:
+    """
+    Equip item_code on char_name:
+      source="inventory": equip directly.
+      source="bank":      withdraw first, then equip.
+    Reads item type from cache to determine the equipment slot.
+    """
+    item_code = task["item_code"]
+    meta      = task.get("meta") or {}
+    source    = meta.get("source", "inventory")
+
+    # Re-check: maybe already equipped (e.g. from a previous partial run)
+    profile = {slot: "" for slot in EQUIPMENT_SLOTS}
+    resp = client.get(f"/characters/{char_name}")
+    if resp.status_code == 200:
+        char_data = resp.json()["data"]
+        profile.update({slot: char_data.get(slot, "") for slot in EQUIPMENT_SLOTS})
+    if is_item_equipped(profile, item_code):
+        logger.info("executor: %s — %s already equipped, skipping", char_name, item_code)
+        return
+
+    if source == "bank":
+        wait_for_cooldown(client, char_name)
+        move_character(client, char_name, *BANK_TILE)
+        wait_for_cooldown(client, char_name)
+        resp = withdraw_item(client, char_name, item_code, 1)
+        if resp.status_code != 200:
+            raise RuntimeError(f"withdraw {item_code} failed: {resp.status_code}")
+        logger.info("executor: %s withdrew %s from bank", char_name, item_code)
+        # Refresh profile after withdraw
+        resp = client.get(f"/characters/{char_name}")
+        if resp.status_code == 200:
+            char_data = resp.json()["data"]
+            profile.update({slot: char_data.get(slot, "") for slot in EQUIPMENT_SLOTS})
+
+    # Determine slot from item type (via item cache)
+    from services.item_cache import get_item_type
+    item_type = get_item_type(client, item_code)
+    slot = get_slot_for_item(item_type, profile) if item_type else None
+    if not slot:
+        raise RuntimeError(f"cannot determine equip slot for {item_code!r} (type={item_type!r})")
+
+    wait_for_cooldown(client, char_name)
+    resp = equip_item(client, char_name, item_code, slot)
+    if resp.status_code == 200:
+        logger.info("executor: %s equipped %s → %s", char_name, item_code, slot)
+    elif resp.status_code == 485:
+        logger.info("executor: %s — %s already equipped (485)", char_name, item_code)
+    else:
+        raise RuntimeError(f"equip {item_code} failed: {resp.status_code}")
+
+
+def execute_fight_task(client, char_name: str, task: dict, cache: dict) -> None:
+    """
+    Fight monster_code `quantity` times for combat XP (level goal training).
+    Pre-fight rest if HP < 30%. Post-fight rest if HP drops low.
+    """
+    monster_code = task["item_code"]
+    count        = task["quantity"]
+
+    monster_tiles = find_content(cache, monster_code)
+    if not monster_tiles:
+        raise RuntimeError(f"no tile for monster {monster_code!r} in map cache")
+    tile = monster_tiles[0]["x"], monster_tiles[0]["y"]
+
+    for i in range(count):
+        # Pre-fight rest check
+        hp, max_hp = get_hp(client, char_name)
+        if max_hp > 0 and hp / max_hp < 0.3:
+            logger.info("executor: %s HP %.0f%% — resting before fight", char_name, 100 * hp / max_hp)
+            wait_for_cooldown(client, char_name)
+            rest(client, char_name)
+
+        wait_for_cooldown(client, char_name)
+        move_character(client, char_name, *tile)
+
+        wait_for_cooldown(client, char_name)
+        resp = fight(client, char_name)
+
+        if resp.status_code == 200:
+            result  = parse_fight_result(resp)
+            outcome = "win" if result and is_win(result) else "loss"
+            logger.info("executor: %s fight %d/%d — %s", char_name, i + 1, count, outcome)
+        elif resp.status_code == 499:
+            wait_for_cooldown(client, char_name)
+        else:
+            logger.warning("executor: %s fight returned %d — stopping", char_name, resp.status_code)
+            break
+
+        # Post-fight rest
+        hp, max_hp = get_hp(client, char_name)
+        if max_hp > 0 and hp / max_hp < 0.3:
+            wait_for_cooldown(client, char_name)
+            rest(client, char_name)
+
+
 def execute_task(client, char_name: str, task: dict, world_state: dict) -> None:
     """Dispatch to the right executor based on task type."""
     task_type = task["type"]
+    cache     = world_state["cache"]
 
     if task_type == TaskType.GATHER:
-        execute_gather_task(client, char_name, task, world_state["cache"])
+        execute_gather_task(client, char_name, task, cache)
+    elif task_type == TaskType.CRAFT:
+        execute_craft_task(client, char_name, task, cache)
+    elif task_type == TaskType.EQUIP:
+        execute_equip_task(client, char_name, task, cache)
+    elif task_type == TaskType.FIGHT:
+        execute_fight_task(client, char_name, task, cache)
     else:
-        logger.warning("executor: task type %r not yet implemented", task_type)
         raise NotImplementedError(f"task type {task_type!r} not implemented")
+
+
+# ---------------------------------------------------------------------------
+# Observability helpers
+# ---------------------------------------------------------------------------
+
+def _log_cycle_summary() -> None:
+    """
+    Print a one-line summary of every goal and a task-count breakdown to the
+    log at the start of each cycle. Lets you see progress at a glance:
+
+        [summary] goals: 2 active, 1 completed, 0 blocked
+        [summary]   ACTIVE  collect copper_ore×200  tasks: 2 open, 1 done
+        [summary]   ACTIVE  level mining→10/Ognerot  tasks: 0 open, 3 done
+        [summary] tasks total: open=2 claimed=0 running=0 done=4 blocked=0 failed=0
+    """
+    all_goals = get_goals()
+    all_tasks = get_tasks()
+
+    # Summarise goal statuses
+    from collections import Counter
+    goal_counts = Counter(g["status"] for g in all_goals)
+    logger.info(
+        "[summary] goals: %d active, %d completed, %d blocked, %d failed",
+        goal_counts.get(GoalStatus.ACTIVE, 0),
+        goal_counts.get(GoalStatus.COMPLETED, 0),
+        goal_counts.get(GoalStatus.BLOCKED, 0),
+        goal_counts.get(GoalStatus.FAILED, 0),
+    )
+
+    # Per-goal line with task breakdown
+    tasks_by_goal: dict[str, list[dict]] = {}
+    for t in all_tasks:
+        tasks_by_goal.setdefault(t["goal_id"], []).append(t)
+
+    for goal in all_goals:
+        gtasks = tasks_by_goal.get(goal["id"], [])
+        tc = Counter(t["status"] for t in gtasks)
+
+        # Build a short human-readable goal description
+        if goal.get("target_item_code") and goal.get("target_quantity"):
+            what = f"{goal['target_item_code']}×{goal['target_quantity']}"
+        elif goal.get("target_skill") and goal.get("target_level"):
+            char = goal.get("target_character", "?")
+            what = f"{goal['target_skill']}→{goal['target_level']}/{char}"
+        else:
+            what = goal.get("target_item_code") or goal.get("target_skill") or "?"
+
+        logger.info(
+            "[summary]   %-10s  %-8s  %s  tasks: %d open, %d running, %d done, %d failed",
+            goal["status"].upper(),
+            goal["type"],
+            what,
+            tc.get(TaskStatus.OPEN, 0) + tc.get(TaskStatus.CLAIMED, 0),
+            tc.get(TaskStatus.RUNNING, 0),
+            tc.get(TaskStatus.DONE, 0),
+            tc.get(TaskStatus.FAILED, 0),
+        )
+
+    # Global task breakdown
+    task_counts = Counter(t["status"] for t in all_tasks)
+    logger.info(
+        "[summary] tasks total: open=%d claimed=%d running=%d done=%d blocked=%d failed=%d",
+        task_counts.get(TaskStatus.OPEN, 0),
+        task_counts.get(TaskStatus.CLAIMED, 0),
+        task_counts.get(TaskStatus.RUNNING, 0),
+        task_counts.get(TaskStatus.DONE, 0),
+        task_counts.get(TaskStatus.BLOCKED, 0),
+        task_counts.get(TaskStatus.FAILED, 0),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +477,11 @@ def run_goals_loop(client, max_cycles: int | None = None) -> None:
 
     while True:
         logger.info("=== goals loop cycle %d ===", cycle_count + 1)
+
+        # Observability: print a compact status summary before planning so the
+        # log shows where things stand at the start of each cycle — useful for
+        # debugging stalls and verifying progress without a debugger.
+        _log_cycle_summary()
 
         # Step 1: planning
         run_planning_cycle(client)

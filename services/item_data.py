@@ -80,6 +80,58 @@ RESOURCE_SKILL: dict[str, str] = {
 }
 
 
+# Primary drop item per resource content_code (reverse of ITEM_SOURCE).
+# Used by: level goal planner — resolves "what item does this resource drop?"
+# so it can create gather tasks using existing task infrastructure.
+RESOURCE_DROP: dict[str, str] = {
+    "copper_rocks":    "copper_ore",
+    "iron_rocks":      "iron_ore",
+    "coal_rocks":      "coal",
+    "gold_rocks":      "gold_ore",
+    "mithril_rocks":   "mithril_ore",
+    "ash_tree":        "ash_wood",
+    "birch_tree":      "birch_wood",
+    "spruce_tree":     "spruce_wood",
+    "maple_tree":      "maple_wood",
+    "gudgeon_spot":    "gudgeon",
+    "shrimp_spot":     "shrimp",
+    "salmon_spot":     "salmon",
+    "trout_spot":      "trout",
+    "bass_spot":       "bass",
+    "sunflower_field": "sunflower",
+    "glowstem":        "glowstem",
+    "nettle":          "nettle",
+    "torch_cactus":    "torch_cactus",
+}
+
+# Best training resource per skill (level 1, widely available).
+# Used by: level goal planner — pick what to gather/fight for XP.
+# content_code for monsters is used directly (find_content searches all types).
+SKILL_TRAIN_RESOURCE: dict[str, str] = {
+    "mining":        "copper_rocks",
+    "woodcutting":   "ash_tree",
+    "fishing":       "gudgeon_spot",
+    "alchemy":       "sunflower_field",
+    "cooking":       None,              # requires ingredients; not supported yet
+    "combat":        "chicken",         # monster content_code
+    "weaponcrafting":  None,            # skill raised by crafting, not gathering
+    "gearcrafting":    None,
+    "jewelrycrafting": None,
+}
+
+# Workshop content_code per crafting skill, as it appears in the map cache.
+# Run `python scripts/discover_map.py --all` to verify exact codes for your server.
+# Planner will block the goal with a clear message if the code isn't found in cache.
+WORKSHOP_CONTENT_CODE: dict[str, str] = {
+    "weaponcrafting":   "weaponcrafting",
+    "gearcrafting":     "gearcrafting",
+    "jewelrycrafting":  "jewelrycrafting",
+    "cooking":          "cooking",
+    "alchemy":          "alchemy",
+    "mining":           "mining",       # smelting forge
+}
+
+
 def resource_for_item(item_code: str) -> str | None:
     """Return the resource tile content_code that drops this item, or None."""
     return ITEM_SOURCE.get(item_code)
@@ -96,3 +148,18 @@ def skill_for_item(item_code: str) -> str | None:
     if resource is None:
         return None
     return skill_for_resource(resource)
+
+
+def drop_for_resource(resource_code: str) -> str | None:
+    """Return the primary drop item_code for a resource tile content_code."""
+    return RESOURCE_DROP.get(resource_code)
+
+
+def train_resource_for_skill(skill: str) -> str | None:
+    """Return the default resource content_code to use for training a skill."""
+    return SKILL_TRAIN_RESOURCE.get(skill)
+
+
+def workshop_code_for_skill(craft_skill: str) -> str | None:
+    """Return the map content_code for the workshop tile of a craft skill."""
+    return WORKSHOP_CONTENT_CODE.get(craft_skill)

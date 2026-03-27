@@ -364,6 +364,25 @@ def expire_stale_claims() -> int:
     return cursor.rowcount
 
 
+def sub_goal_exists(parent_goal_id: str, goal_type: str, item_code: str) -> bool:
+    """
+    Return True if an active sub-goal of this type for this item already exists
+    under the given parent. Used by the planner to avoid spawning duplicate
+    collect/craft sub-goals on every planning cycle.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM goals
+            WHERE parent_goal_id = ? AND type = ? AND target_item_code = ?
+              AND status = 'active'
+            LIMIT 1
+            """,
+            (parent_goal_id, goal_type, item_code),
+        ).fetchone()
+    return row is not None
+
+
 def task_exists(goal_id: str, task_type: str, item_code: str | None = None) -> bool:
     """
     Return True if an open or claimed task of this type already exists for the goal.
