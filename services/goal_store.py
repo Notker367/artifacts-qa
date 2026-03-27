@@ -39,7 +39,6 @@ def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -366,21 +365,50 @@ def expire_stale_claims() -> int:
 
 def sub_goal_exists(parent_goal_id: str, goal_type: str, item_code: str) -> bool:
     """
-    Return True if an active sub-goal of this type for this item already exists
-    under the given parent. Used by the planner to avoid spawning duplicate
-    collect/craft sub-goals on every planning cycle.
+    Return True if a sub-goal of this type for this item already exists under
+    the given parent in a non-terminal state (active or blocked).
+    Blocked sub-goals are included so the planner doesn't re-spawn them every cycle.
     """
     with _connect() as conn:
         row = conn.execute(
             """
             SELECT 1 FROM goals
             WHERE parent_goal_id = ? AND type = ? AND target_item_code = ?
-              AND status = 'active'
+              AND status IN ('active', 'blocked')
             LIMIT 1
             """,
             (parent_goal_id, goal_type, item_code),
         ).fetchone()
     return row is not None
+
+
+def get_sub_goal_blocked_reason(parent_goal_id: str, item_code: str) -> str | None:
+    """
+    Return the blocked_reason of a blocked sub-goal for this item under the
+    given parent, or None if no blocked sub-goal exists.
+    Used by the planner to propagate sub-goal failures to the parent.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT blocked_reason FROM goals
+            WHERE parent_goal_id = ? AND target_item_code = ?
+              AND status = 'blocked'
+            LIMIT 1
+            """,
+            (parent_goal_id, item_code),
+        ).fetchone()
+    return row["blocked_reason"] if row else None
+
+
+def count_failed_tasks(goal_id: str) -> int:
+    """Return the number of failed tasks for this goal. Used to block a goal after too many retries."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE goal_id = ? AND status = 'failed'",
+            (goal_id,),
+        ).fetchone()
+    return row["n"]
 
 
 def task_exists(goal_id: str, task_type: str, item_code: str | None = None) -> bool:

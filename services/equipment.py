@@ -67,19 +67,24 @@ def equip_item(client, character_name: str, item_code: str, slot: str):
     Character must have the item in inventory and not be on cooldown.
     Returns raw response — 200 on success, 491 if slot/item mismatch,
     499 if on cooldown, 485 if item already equipped.
+
+    slot is the character field name (e.g. "weapon_slot"); the API expects
+    the value without the _slot suffix (e.g. "weapon"), so we strip it here.
     """
+    api_slot = slot.removesuffix("_slot")
     return client.post(
         f"/my/{character_name}/action/equip",
-        json={"code": item_code, "slot": slot},
+        json={"code": item_code, "slot": api_slot},
     )
 
 
 def unequip_item(client, character_name: str, slot: str):
     """
     Unequip the item in slot and move it to inventory.
-    Returns raw response.
+    slot is the character field name (e.g. "weapon_slot"); API expects "weapon".
     """
+    api_slot = slot.removesuffix("_slot")
     return client.post(
         f"/my/{character_name}/action/unequip",
-        json={"slot": slot},
+        json={"slot": api_slot},
     )

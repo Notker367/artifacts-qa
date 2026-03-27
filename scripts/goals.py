@@ -87,7 +87,7 @@ BANK_TILE = (4, 1)
 # ---------------------------------------------------------------------------
 
 GOALS: list[Goal] = [
-    Goal.collect("copper_ore", 200),
+    Goal.equip("copper_dagger", "Furiba"),
 ]
 
 
@@ -242,14 +242,27 @@ def execute_craft_task(client, char_name: str, task: dict, cache: dict) -> None:
         raise RuntimeError(f"no workshop tile for {workshop_code!r} in map cache")
     workshop_tile = workshop_tiles[0]["x"], workshop_tiles[0]["y"]
 
-    # --- Withdraw ingredients from bank ---
+    # --- Move to bank, deposit anything in inventory, then withdraw ---
+    # Deposit first to make room — otherwise withdraw may hit 497 (inventory full).
     wait_for_cooldown(client, char_name)
     move_character(client, char_name, *BANK_TILE)
+    inventory, _ = get_inventory_state(client, char_name)
+    for slot in inventory:
+        code = slot.get("code", "")
+        qty  = slot.get("quantity", 0)
+        if code and qty > 0:
+            wait_for_cooldown(client, char_name)
+            deposit_item(client, char_name, code, qty)
+
     for ingredient in recipe:
         mat_code = ingredient["code"]
         mat_qty  = ingredient["quantity"] * quantity
         wait_for_cooldown(client, char_name)
         resp = withdraw_item(client, char_name, mat_code, mat_qty)
+        if resp.status_code == 499:
+            # Clock skew edge case: wait again and retry once
+            wait_for_cooldown(client, char_name)
+            resp = withdraw_item(client, char_name, mat_code, mat_qty)
         if resp.status_code != 200:
             raise RuntimeError(f"withdraw {mat_code} × {mat_qty} failed: {resp.status_code}")
         logger.info("executor: %s withdrew %s × %d", char_name, mat_code, mat_qty)
@@ -259,6 +272,9 @@ def execute_craft_task(client, char_name: str, task: dict, cache: dict) -> None:
     move_character(client, char_name, *workshop_tile)
     wait_for_cooldown(client, char_name)
     resp = craft_action(client, char_name, item_code, quantity)
+    if resp.status_code == 499:
+        wait_for_cooldown(client, char_name)
+        resp = craft_action(client, char_name, item_code, quantity)
     if resp.status_code != 200:
         raise RuntimeError(f"craft {item_code} × {quantity} failed: {resp.status_code}")
     logger.info("executor: %s crafted %s × %d", char_name, item_code, quantity)
@@ -302,6 +318,9 @@ def execute_equip_task(client, char_name: str, task: dict, cache: dict) -> None:
         move_character(client, char_name, *BANK_TILE)
         wait_for_cooldown(client, char_name)
         resp = withdraw_item(client, char_name, item_code, 1)
+        if resp.status_code == 499:
+            wait_for_cooldown(client, char_name)
+            resp = withdraw_item(client, char_name, item_code, 1)
         if resp.status_code != 200:
             raise RuntimeError(f"withdraw {item_code} failed: {resp.status_code}")
         logger.info("executor: %s withdrew %s from bank", char_name, item_code)

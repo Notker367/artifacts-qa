@@ -29,6 +29,8 @@ from services.goal_store import (
     get_active_task_quantity,
     task_exists,
     sub_goal_exists,
+    get_sub_goal_blocked_reason,
+    count_failed_tasks,
     reserve,
     release_reservations_for_goal,
     expire_stale_claims,
@@ -110,8 +112,21 @@ def run_planning_cycle(client) -> None:
 # Goal dispatcher
 # ---------------------------------------------------------------------------
 
+# Max consecutive task failures before the goal is blocked.
+# Prevents infinite retry storms when a task fails repeatedly (e.g. 497 loop).
+MAX_TASK_FAILURES = 5
+
+
 def _plan_goal(goal: dict, world_state: dict, client) -> None:
     goal_type = goal["type"]
+    goal_id   = goal["id"]
+
+    # Block the goal if too many tasks have already failed — avoids tight retry loops
+    # where a task fails immediately and the planner queues a new one every cycle.
+    failures = count_failed_tasks(goal_id)
+    if failures >= MAX_TASK_FAILURES:
+        _block_goal(goal_id, f"too many task failures ({failures}) — investigate and reset DB")
+        return
 
     if goal_type == GoalType.COLLECT:
         _plan_collect(goal, world_state, client)
@@ -122,7 +137,7 @@ def _plan_goal(goal: dict, world_state: dict, client) -> None:
     elif goal_type == GoalType.LEVEL:
         _plan_level(goal, world_state, client)
     else:
-        _block_goal(goal["id"], f"unknown goal type: {goal_type!r}")
+        _block_goal(goal_id, f"unknown goal type: {goal_type!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -276,23 +291,53 @@ def _plan_craft(goal: dict, world_state: dict, client) -> None:
     if needed_crafts <= 0:
         return
 
-    # Check materials and spawn sub-goals for any shortfalls
+    # Check materials and spawn sub-goals for any shortfalls.
+    # An ingredient can itself be craftable (e.g. copper_ore → copper_bar → copper_dagger).
+    # Check the item cache: if the ingredient has a recipe, spawn a CRAFT sub-goal;
+    # otherwise spawn a COLLECT (gather) sub-goal.
     all_available = True
     for ingredient in recipe:
-        mat_code = ingredient["code"]
+        mat_code   = ingredient["code"]
         mat_needed = ingredient["quantity"] * needed_crafts
-        avail = available_in_bank(world_state, mat_code)
+        avail      = available_in_bank(world_state, mat_code)
 
         if avail < mat_needed:
             all_available = False
             missing = mat_needed - avail
-            if not sub_goal_exists(goal_id, GoalType.COLLECT, mat_code):
-                sub = Goal.collect(mat_code, missing,
-                                   parent_goal_id=goal_id,
-                                   allowed_characters=goal.get("allowed_characters"))
-                insert_goal(sub.to_dict())
-                logger.info("planner: goal %s — spawned collect sub-goal for %s × %d",
-                            goal_id[:8], mat_code, missing)
+
+            # If a blocked sub-goal already exists for this ingredient, the parent
+            # cannot proceed either — propagate the block rather than looping forever.
+            blocked_reason = get_sub_goal_blocked_reason(goal_id, mat_code)
+            if blocked_reason:
+                _block_goal(goal_id, f"sub-goal for {mat_code!r} is blocked: {blocked_reason}")
+                return
+
+            # Decide sub-goal type based on whether the ingredient has a recipe.
+            #
+            # Sub-goal target = mat_needed (total required), NOT missing (current gap).
+            # If target were set to `missing`, the sub-goal would complete immediately
+            # when bank_qty >= missing — even if the total need (mat_needed) isn't met
+            # yet. Using mat_needed ensures the sub-goal only completes when the full
+            # quantity needed by the parent craft is present in the bank.
+            mat_recipe = get_cached_recipe(client, mat_code)
+            if mat_recipe:
+                # Ingredient is itself craftable — spawn a craft sub-goal
+                if not sub_goal_exists(goal_id, GoalType.CRAFT, mat_code):
+                    sub = Goal.craft(mat_code, mat_needed,
+                                     parent_goal_id=goal_id,
+                                     allowed_characters=goal.get("allowed_characters"))
+                    insert_goal(sub.to_dict())
+                    logger.info("planner: goal %s — spawned craft sub-goal for %s × %d",
+                                goal_id[:8], mat_code, mat_needed)
+            else:
+                # Ingredient is gathered — spawn a collect sub-goal
+                if not sub_goal_exists(goal_id, GoalType.COLLECT, mat_code):
+                    sub = Goal.collect(mat_code, mat_needed,
+                                       parent_goal_id=goal_id,
+                                       allowed_characters=goal.get("allowed_characters"))
+                    insert_goal(sub.to_dict())
+                    logger.info("planner: goal %s — spawned collect sub-goal for %s × %d",
+                                goal_id[:8], mat_code, mat_needed)
 
     if not all_available:
         logger.info("planner: goal %s — craft %s waiting for materials",
