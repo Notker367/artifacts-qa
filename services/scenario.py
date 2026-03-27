@@ -68,8 +68,12 @@ BANK_TILE = (4, 1)                    # nearest bank from starting area
 MONSTERS_TASKMASTER_TILE = (1, 2)     # accept/complete monster tasks
 
 # --- Thresholds ---
-HP_THRESHOLD = 0.3     # rest when HP drops below 30% to avoid death penalty cooldown
-DEPOSIT_THRESHOLD = 5  # deposit to bank when fewer than 5 free inventory slots remain
+HP_THRESHOLD = 0.3      # rest when HP drops below 30% to avoid death penalty cooldown
+DEPOSIT_THRESHOLD = 5   # deposit to bank when fewer than 5 free inventory slots remain
+QUANTITY_THRESHOLD = 80 # deposit when total item quantity reaches this value.
+                        # inventory_max_items is a quantity limit (typically 100), not a slot count.
+                        # free_slots() counts empty slot entries and stays high even at max quantity,
+                        # so we need this separate check to trigger deposit early enough.
 
 
 # ---------------------------------------------------------------------------
@@ -105,16 +109,22 @@ def _maybe_rest(client, character_name: str) -> None:
 
 def _maybe_deposit_all(client, character_name: str, force: bool = False) -> None:
     """
-    Deposit all non-empty inventory items to bank if free slots are low.
-    Moves to bank tile and back — caller must re-move to task tile after.
+    Deposit all non-empty inventory items to bank when inventory is getting full.
+    Moves to bank tile — caller must re-move to task tile after.
 
-    force=True skips the free_slots threshold check and deposits unconditionally.
-    Use this when gather returns 497 (INVENTORY_FULL): free_slots counts empty slot
-    entries but inventory_max_items is a quantity limit — characters can have many
-    empty slots yet still be at max item count.
+    Triggers when ANY of these conditions is true:
+      - force=True: called reactively on 497 (INVENTORY_FULL)
+      - free slots < DEPOSIT_THRESHOLD: few empty slot entries remain
+      - total item quantity >= QUANTITY_THRESHOLD: approaching inventory_max_items limit
+
+    Why both slot and quantity checks:
+      inventory_max_items is a quantity limit (typically 100), not a slot count.
+      A character stacking one item type fills quantity while keeping many empty
+      slot entries — free_slots() stays high and never triggers the slot check alone.
     """
     inventory = get_inventory(client, character_name)
-    if not force and free_slots(inventory) >= DEPOSIT_THRESHOLD:
+    total_qty = sum(slot.get("quantity", 0) for slot in inventory)
+    if not force and free_slots(inventory) >= DEPOSIT_THRESHOLD and total_qty < QUANTITY_THRESHOLD:
         return
 
     logger.info("%s: inventory low (%d free) — depositing to bank", character_name, free_slots(inventory))
@@ -262,10 +272,12 @@ def _run_gathering_cycle(client, character_name: str, cache: dict, role: str) ->
         logger.info("%s: gathered | free slots: %d", character_name, free_slots(inventory))
     elif response.status_code == INVENTORY_FULL:
         # Inventory is full by quantity (inventory_max_items), not necessarily by slot count.
-        # free_slots() counts empty slot entries — may be high even when quantity is maxed.
-        # Force deposit bypasses the threshold check so we always clear the inventory here.
+        # force=True bypasses the threshold check so deposit always runs.
+        # wait_for_cooldown after deposit ensures the next cycle starts clean —
+        # without it, the deposit cooldown can still be active when gather is retried.
         logger.info("%s: inventory full (497) — forcing deposit to bank", character_name)
         _maybe_deposit_all(client, character_name, force=True)
+        wait_for_cooldown(client, character_name)
     else:
         logger.warning("%s: gather returned %d", character_name, response.status_code)
 
