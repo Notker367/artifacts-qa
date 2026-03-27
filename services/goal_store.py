@@ -409,6 +409,38 @@ def get_reserved_quantity(item_code: str) -> int:
     return row["total"]
 
 
+def get_all_reserved_quantities() -> dict:
+    """
+    Return {item_code: total_reserved_quantity} for all items with active reservations.
+    Used by world_state to build a single reservation snapshot per planning cycle
+    instead of calling get_reserved_quantity() N times.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT item_code, SUM(quantity) AS total FROM reservations GROUP BY item_code"
+        ).fetchall()
+    return {row["item_code"]: row["total"] for row in rows}
+
+
+def get_active_task_quantity(goal_id: str, item_code: str) -> int:
+    """
+    Return total quantity already covered by open/claimed/running tasks for
+    this goal and item. Planner subtracts this from needed quantity to avoid
+    creating duplicate work when tasks are already in flight.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(quantity), 0) AS total
+            FROM tasks
+            WHERE goal_id = ? AND item_code = ?
+              AND status IN ('open', 'claimed', 'running')
+            """,
+            (goal_id, item_code),
+        ).fetchone()
+    return row["total"]
+
+
 def release_reservation(reservation_id: str) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM reservations WHERE id = ?", (reservation_id,))
