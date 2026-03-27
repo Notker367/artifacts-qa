@@ -21,6 +21,7 @@ from services.gathering import gather
 from services.combat import fight, parse_fight_result, is_win
 from services.rest import get_hp, rest
 from services.inventory import get_inventory, free_slots
+from services.errors import INVENTORY_FULL
 from services.bank import deposit_item, find_bank_item
 from services.map_cache import get_map_cache, find_content
 from services.tasks import (
@@ -102,13 +103,18 @@ def _maybe_rest(client, character_name: str) -> None:
         rest(client, character_name)
 
 
-def _maybe_deposit_all(client, character_name: str) -> None:
+def _maybe_deposit_all(client, character_name: str, force: bool = False) -> None:
     """
     Deposit all non-empty inventory items to bank if free slots are low.
     Moves to bank tile and back — caller must re-move to task tile after.
+
+    force=True skips the free_slots threshold check and deposits unconditionally.
+    Use this when gather returns 497 (INVENTORY_FULL): free_slots counts empty slot
+    entries but inventory_max_items is a quantity limit — characters can have many
+    empty slots yet still be at max item count.
     """
     inventory = get_inventory(client, character_name)
-    if free_slots(inventory) >= DEPOSIT_THRESHOLD:
+    if not force and free_slots(inventory) >= DEPOSIT_THRESHOLD:
         return
 
     logger.info("%s: inventory low (%d free) — depositing to bank", character_name, free_slots(inventory))
@@ -248,6 +254,12 @@ def _run_gathering_cycle(client, character_name: str, cache: dict, role: str) ->
     if response.status_code == 200:
         inventory = get_inventory(client, character_name)
         logger.info("%s: gathered | free slots: %d", character_name, free_slots(inventory))
+    elif response.status_code == INVENTORY_FULL:
+        # Inventory is full by quantity (inventory_max_items), not necessarily by slot count.
+        # free_slots() counts empty slot entries — may be high even when quantity is maxed.
+        # Force deposit bypasses the threshold check so we always clear the inventory here.
+        logger.info("%s: inventory full (497) — forcing deposit to bank", character_name)
+        _maybe_deposit_all(client, character_name, force=True)
     else:
         logger.warning("%s: gather returned %d", character_name, response.status_code)
 
