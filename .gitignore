@@ -7,3 +7,4 @@ __pycache__/
 TODO_list.md
 logs/*.log
 data/*.json
+data/*.db
