@@ -177,6 +177,96 @@
 
 ---
 
+## Фаза 5 — Goal system (`v0.5.x`)
+
+Цель: верхний слой пользовательских целей поверх исполнительного слоя.
+Персонажи выбираются по пригодности, а не по фиксированным ролям.
+Planner пишет задачи в БД — dispatcher читает и выполняет, не зная о planner.
+Детали архитектуры и acceptance criteria: `docs/goal_system.md`.
+
+- [ ] **21. SQLite storage** (`feat(goals): add SQLite storage for goals, tasks, reservations`)
+  - таблицы: `goals`, `tasks`, `reservations`
+  - `data/goals.db` — gitignored, создаётся при первом запуске
+  - атомарные UPDATE для статусов и claim — без них reservation сломается
+  - схема версионируется через `schema_version` таблицу
+
+- [ ] **22. Модели** (`feat(goals): add Goal and PlannedTask dataclasses`)
+  - `Goal`: id, type, status, priority, target_item/skill/level/character,
+    allowed/preferred/assigned_character, hard_assignment, parent_goal_id
+  - `PlannedTask`: id, goal_id, type, status, character_name, item_code, quantity,
+    allowed/preferred_characters, hard_assignment, claimed_at, reserved_until
+  - статусы goal: `active`, `completed`, `blocked`, `failed`
+  - статусы task: `open`, `claimed`, `running`, `done`, `blocked`, `failed`
+  - blocked хранит причину строкой — для логов и будущего UI
+
+- [ ] **23. World state snapshot** (`feat(goals): add world state collector`)
+  - один снимок за planning cycle: персонажи, инвентари, навыки, экипировка, банк,
+    active goals, active tasks, reservations, cooldowns
+  - единственный источник истины для planner в рамках одного цикла
+  - не дёргает API повторно внутри одного planning pass
+
+- [ ] **24. Planner cycle** (`feat(goals): add idempotent planner loop`)
+  - читает active goals → world state → создаёт недостающие tasks
+  - idempotent: не создаёт дубли, если task уже существует в open/claimed
+  - при создании dependency tasks хранит `parent_goal_id`
+  - защита от циклов: visited set при рекурсивном планировании, лимит глубины
+  - если зависимость неразрешима → goal → `blocked` с причиной
+
+- [ ] **25. Assignment / targeting** (`feat(goals): add character suitability scoring`)
+  - `score_character(char, task)` → число; выше = лучше подходит
+  - факторы: нужный инструмент надет, skill level достаточен, уже рядом с тайлом,
+    cooldown мал, персонаж в allowed_characters
+  - `allowed_characters` — только они могут взять задачу
+  - `preferred_characters` — получают бонус к score
+  - `hard_assignment` — только один конкретный персонаж, score остальных = 0
+  - `scripts/goals.py` — новый runner, не трогает `scenario.py`
+
+- [ ] **26. Reservation + claim** (`feat(goals): add reservation and claim/lock system`)
+  - reservation: сколько единиц ресурса уже зарезервировано под active tasks/goals
+  - перед созданием gather-task: `needed = target − in_bank − reserved − in_active_tasks`
+  - claim: `task.claimed_by`, `task.claimed_at`; таймаут ~300s (бой + смерть + восстановление)
+  - dispatcher при взятии задачи делает атомарный UPDATE status=claimed WHERE status=open
+  - expired claims возвращаются в open в начале каждого planning cycle
+
+- [ ] **27. Collect goal** (`feat(goals): add collect goal with bank-based progress`)
+  - MVP первого типа цели
+  - прогресс = количество предмета в банке (не в инвентаре, не в пути)
+  - `remaining = target_qty − bank_qty − reserved`
+  - разбивка на чанки ≤ inventory_max_items * DEPOSIT_FILL_RATIO
+  - done когда `bank_qty >= target_qty`
+
+- [ ] **28. Craft goal** (`feat(goals): add craft goal with recipe cache and gather dependencies`)
+  - рецепты из `GET /items/{code}` → `craft.items[]`
+  - кэш рецептов в `data/items.json` (аналог `maps.json`, TTL или on-demand)
+  - если материалов не хватает — автоматически создаёт collect sub-goals
+  - craft task выдаётся только когда все материалы доступны (bank − reserved ≥ needed)
+  - done когда готовый предмет появился в нужном количестве
+
+- [ ] **29. Equip goal** (`feat(goals): add equip goal with fallback to craft/collect`)
+  - equip не требует тайла — просто `POST /action/equip`
+  - порядок поиска предмета: equipped → inventory → bank → craft/collect
+  - если предмет уже надет → goal сразу `completed`
+  - если предмет в инвентаре → equip
+  - если предмет в банке → withdraw → equip
+  - если нет нигде → spawn craft/collect sub-goal → ждать → equip
+  - `target_character` обязателен, `hard_assignment = True` по умолчанию
+
+- [ ] **30. Level goal** (`feat(goals): add level goal with action registry`)
+  - критерий завершения: `skill_level >= target_level` у target_character
+  - action registry: какие действия качают какой навык (mining → mine copper/iron/...,
+    woodcutting → cut ash/birch/..., combat → fight monsters)
+  - planner выбирает подходящий ресурс/монстра по текущему skill level персонажа
+  - combat level goal — базовая заглушка: бить ближайшего посильного монстра
+  - level goal можно совмещать с collect: одни и те же действия, разный критерий
+
+- [ ] **31. Observability** (`feat(goals): add planner decision logging and blocked reporting`)
+  - лог каждого planning decision: почему выбран персонаж, какой score, какая задача создана
+  - лог blocked: причина + goal/task id
+  - лог reservation state при создании задач
+  - статус всех целей и подзадач виден в логах без дебаггера
+
+---
+
 ## MVP ✅
 
 Пункты 1–12 (Фазы 1 и 2) стабильны.
