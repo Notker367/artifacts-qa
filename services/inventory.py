@@ -28,6 +28,19 @@ def get_inventory_max_items(client, character_name: str) -> int:
     return response.json()["data"].get("inventory_max_items", 0)
 
 
+def get_inventory_state(client, character_name: str) -> tuple:
+    """
+    Return (inventory, max_items) from a single GET /characters call.
+    Use this instead of calling get_inventory and get_inventory_max_items
+    separately — avoids a redundant API request when both values are needed
+    together (e.g. computing fill ratio before a deposit decision).
+    """
+    response = client.get(f"/characters/{character_name}")
+    response.raise_for_status()
+    data = response.json()["data"]
+    return data.get("inventory", []), data.get("inventory_max_items", 100)
+
+
 def free_slots(inventory: list) -> int:
     """
     Return the number of empty slots in the inventory.

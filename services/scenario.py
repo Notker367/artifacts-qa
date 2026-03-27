@@ -20,7 +20,7 @@ from services.movement import move_character
 from services.gathering import gather
 from services.combat import fight, parse_fight_result, is_win
 from services.rest import get_hp, rest
-from services.inventory import get_inventory, free_slots
+from services.inventory import get_inventory, get_inventory_state, free_slots
 from services.errors import INVENTORY_FULL
 from services.bank import deposit_item, find_bank_item
 from services.map_cache import get_map_cache, find_content
@@ -68,12 +68,9 @@ BANK_TILE = (4, 1)                    # nearest bank from starting area
 MONSTERS_TASKMASTER_TILE = (1, 2)     # accept/complete monster tasks
 
 # --- Thresholds ---
-HP_THRESHOLD = 0.3      # rest when HP drops below 30% to avoid death penalty cooldown
-DEPOSIT_THRESHOLD = 5   # deposit to bank when fewer than 5 free inventory slots remain
-QUANTITY_THRESHOLD = 80 # deposit when total item quantity reaches this value.
-                        # inventory_max_items is a quantity limit (typically 100), not a slot count.
-                        # free_slots() counts empty slot entries and stays high even at max quantity,
-                        # so we need this separate check to trigger deposit early enough.
+HP_THRESHOLD = 0.3        # rest when HP drops below 30% to avoid death penalty cooldown
+DEPOSIT_THRESHOLD = 5     # deposit when fewer than 5 free inventory slot entries remain
+DEPOSIT_FILL_RATIO = 0.8  # deposit when total item quantity reaches 80% of inventory_max_items
 
 
 # ---------------------------------------------------------------------------
@@ -114,17 +111,16 @@ def _maybe_deposit_all(client, character_name: str, force: bool = False) -> None
 
     Triggers when ANY of these conditions is true:
       - force=True: called reactively on 497 (INVENTORY_FULL)
-      - free slots < DEPOSIT_THRESHOLD: few empty slot entries remain
-      - total item quantity >= QUANTITY_THRESHOLD: approaching inventory_max_items limit
+      - free slot entries < DEPOSIT_THRESHOLD
+      - total item quantity >= inventory_max_items * DEPOSIT_FILL_RATIO
 
-    Why both slot and quantity checks:
-      inventory_max_items is a quantity limit (typically 100), not a slot count.
-      A character stacking one item type fills quantity while keeping many empty
-      slot entries — free_slots() stays high and never triggers the slot check alone.
+    Both checks are needed because inventory_max_items is a quantity limit, not a
+    slot count. A character stacking one item type fills quantity while keeping many
+    empty slot entries — the slot check alone never fires in that case.
     """
-    inventory = get_inventory(client, character_name)
+    inventory, max_items = get_inventory_state(client, character_name)
     total_qty = sum(slot.get("quantity", 0) for slot in inventory)
-    if not force and free_slots(inventory) >= DEPOSIT_THRESHOLD and total_qty < QUANTITY_THRESHOLD:
+    if not force and free_slots(inventory) >= DEPOSIT_THRESHOLD and total_qty < max_items * DEPOSIT_FILL_RATIO:
         return
 
     logger.info("%s: inventory low (%d free) — depositing to bank", character_name, free_slots(inventory))
