@@ -66,10 +66,10 @@ logger = logging.getLogger(__name__)
 
 # Items per gather task chunk.
 # A character can carry at most inventory_max_items (typically 100) total items.
-# We use 80 as a safe default — leaves headroom for multi-item drops (ore + gems).
-# When assignment knows the specific character, this could be adjusted to their
-# actual max, but for planning purposes a fixed chunk is sufficient.
-GATHER_CHUNK = 80
+# The early-deposit threshold is 80% = 80 items. With multi-item drops (ore + gem
+# + craft result), the target item count in inventory can be 5-10 lower than total.
+# 60 leaves enough headroom so the task completes before the 80-item threshold fires.
+GATHER_CHUNK = 60
 
 
 # ---------------------------------------------------------------------------
