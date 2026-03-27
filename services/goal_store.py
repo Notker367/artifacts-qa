@@ -446,6 +446,12 @@ def release_reservation(reservation_id: str) -> None:
         conn.execute("DELETE FROM reservations WHERE id = ?", (reservation_id,))
 
 
+def release_reservations_for_task(task_id: str) -> None:
+    """Release reservations tied to a specific task when it completes or fails."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM reservations WHERE task_id = ?", (task_id,))
+
+
 def release_reservations_for_goal(goal_id: str) -> None:
     """Release all reservations when a goal is completed or failed."""
     with _connect() as conn:
