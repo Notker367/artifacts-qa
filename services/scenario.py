@@ -210,6 +210,12 @@ def run_combat_cycle(client, character_name: str, cache: dict) -> None:
     wait_for_cooldown(client, character_name)
     response = fight(client, character_name)
 
+    if response.status_code == INVENTORY_FULL:
+        # Fight returns 497 when inventory is full — same quantity-based limit as gathering.
+        # Force deposit, then let the next cycle attempt the fight.
+        logger.info("%s: inventory full (497) during fight — forcing deposit to bank", character_name)
+        _maybe_deposit_all(client, character_name, force=True)
+        return
     if response.status_code != 200:
         logger.warning("%s: fight returned %d", character_name, response.status_code)
         return
