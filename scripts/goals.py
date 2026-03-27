@@ -61,7 +61,7 @@ from services.goal_store import (
 from services.goals import Goal, GoalStatus, TaskStatus, TaskType
 from services.world_state import build_world_state
 from services.planner import run_planning_cycle
-from services.assignment import find_best_task_for_character
+from services.assignment import find_best_task_for_character, find_best_character_for_task
 from services.errors import INVENTORY_FULL
 
 logging.basicConfig(
@@ -187,8 +187,13 @@ def execute_gather_task(client, char_name: str, task: dict, cache: dict) -> None
             inventory, _ = get_inventory_state(client, char_name)
             logger.info("executor: %s inventory full (497) — depositing", char_name)
             _deposit_all_to_bank(client, char_name, inventory)
+        elif response.status_code == 499:
+            # Still on cooldown despite wait_for_cooldown — clock skew edge case.
+            # Wait again and retry rather than aborting the task.
+            logger.warning("executor: %s gather returned 499 (clock skew?) — retrying", char_name)
+            wait_for_cooldown(client, char_name)
         else:
-            logger.warning("executor: %s gather returned %d", char_name, response.status_code)
+            logger.warning("executor: %s gather returned %d — aborting task", char_name, response.status_code)
             break
 
     else:
@@ -248,18 +253,33 @@ def run_goals_loop(client, max_cycles: int | None = None) -> None:
         ready = find_ready_characters(world_state["characters"])
 
         # Step 3: assign and execute
-        for char in ready:
-            name = char["name"]
-            task = find_best_task_for_character(char, world_state)
-            if task is None:
-                logger.debug("goals: %s — no suitable task this cycle", name)
+        # Iterate over open tasks and pick the BEST character for each task —
+        # not the other way around. This ensures the highest-scored character
+        # (e.g. Ognerot for mining) gets the task, not whoever happens to be
+        # first in the ready list.
+        open_tasks = [t for t in world_state["tasks"] if t["status"] == TaskStatus.OPEN]
+        assigned_chars: set[str] = set()
+        ready_names = {c["name"] for c in ready}
+
+        for task in open_tasks:
+            best_name = find_best_character_for_task(task, world_state)
+            if best_name is None or best_name in assigned_chars:
                 continue
 
-            # Atomic claim: prevents two characters taking the same task
-            if not claim_task(task["id"], name):
-                logger.debug("goals: %s — task %s already claimed", name, task["id"][:8])
+            # Best character must be ready this cycle (not on cooldown)
+            if best_name not in ready_names:
+                logger.debug("goals: best char %s for task %s is not ready — skipping",
+                             best_name, task["id"][:8])
                 continue
 
+            # Atomic claim
+            if not claim_task(task["id"], best_name):
+                logger.debug("goals: task %s already claimed", task["id"][:8])
+                continue
+
+            assigned_chars.add(best_name)
+
+            name = best_name
             logger.info("--- %s → task %s (%s %s × %d) ---",
                         name, task["id"][:8], task["type"],
                         task.get("item_code", ""), task.get("quantity", 0))
