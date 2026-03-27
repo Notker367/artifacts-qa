@@ -39,6 +39,7 @@ from services.goals import (
 )
 from services.world_state import build_world_state, bank_quantity, available_in_bank
 from services.map_cache import get_map_cache, find_content
+from services.item_data import resource_for_item
 
 logger = logging.getLogger(__name__)
 
@@ -143,11 +144,15 @@ def _plan_collect(goal: dict, world_state: dict, client) -> None:
         return
 
     # --- Verify the resource tile exists in map cache ---
-    # Planner checks before creating tasks so we get a clear blocked reason
-    # instead of a silent runtime failure when the dispatcher tries to move.
+    # item_code is a drop (e.g. "copper_ore"); the map cache uses resource tile
+    # content_codes (e.g. "copper_rocks"). Resolve via ITEM_SOURCE first.
+    resource_code = resource_for_item(item_code)
+    if resource_code is None:
+        _block_goal(goal_id, f"no resource mapping for {item_code!r} — add to item_data.ITEM_SOURCE")
+        return
     cache = get_map_cache(client)
-    if not find_content(cache, item_code):
-        _block_goal(goal_id, f"no map tile found for {item_code!r} — run discover_map.py")
+    if not find_content(cache, resource_code):
+        _block_goal(goal_id, f"no map tile found for {resource_code!r} — run discover_map.py")
         return
 
     # --- How much is still unplanned ---

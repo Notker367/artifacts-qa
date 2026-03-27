@@ -18,8 +18,9 @@
 
 import logging
 
-from services.bank import get_bank_items, find_bank_item
+from services.bank import get_bank_items
 from services.multi_char import get_all_characters
+from services.map_cache import get_map_cache
 from services.goal_store import get_goals, get_tasks, get_all_reserved_quantities
 from services.goals import GoalStatus, TaskStatus
 
@@ -28,13 +29,21 @@ logger = logging.getLogger(__name__)
 
 def build_world_state(client) -> dict:
     """
-    Fetch all inputs the planner needs and return a single snapshot dict.
-    Makes exactly three API calls: /my/characters, /my/bank/items, and nothing else.
-    SQLite reads are cheap — goals/tasks/reservations come from the local DB.
+    Fetch all inputs the planner and assignment scorer need, return a single snapshot.
+
+    API calls made:
+      - GET /my/characters
+      - GET /my/bank/items
+      - map cache (file read; API only if cache is stale)
+
+    SQLite reads for goals/tasks/reservations are cheap local queries.
+    The cache is included so the assignment scorer can check tile proximity
+    without an extra API call per character.
     """
-    logger.debug("world_state: fetching characters and bank")
+    logger.debug("world_state: fetching characters, bank and map cache")
     characters = get_all_characters(client)
     bank_items = get_bank_items(client)
+    cache = get_map_cache(client)
 
     # Convert bank list to a lookup dict — planner checks quantities by code constantly.
     bank = {item["code"]: item["quantity"] for item in bank_items if item.get("code")}
@@ -54,10 +63,11 @@ def build_world_state(client) -> dict:
     )
 
     return {
-        "characters": characters,
-        "bank":        bank,
-        "goals":       goals,
-        "tasks":       tasks,
+        "characters":   characters,
+        "bank":         bank,
+        "cache":        cache,
+        "goals":        goals,
+        "tasks":        tasks,
         "reservations": reservations,
     }
 
